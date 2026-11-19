@@ -961,7 +961,7 @@ hdr_l, hdr_r = st.columns([4, 1.2])
 with hdr_l:
     st.title("🌶️ Ají y Molino — Sistema de Inventario y Ventas")
     modo_conn = "☁️ Google Sheets (Nube 24/7)" if is_cloud_mode() else f"💻 Local (`{EXCEL_PATH.name}`)"
-    rol_badge = "🔐 Administrador" if is_admin else f"👤 Vendedor: **{st.session_state['user_name']}** (Solo Ventas)"
+    rol_badge = "🔐 Administrador" if is_admin else f"👤 Vendedor: **{st.session_state['user_name']}** (Ventas e Inventario)"
     st.caption(f"{modo_conn}  ·  {rol_badge}")
 with hdr_r:
     st.write("")
@@ -997,7 +997,8 @@ if is_admin:
         ]
     )
 else:
-    (tab_reg,) = st.tabs(["🛒 Registrar Venta"])
+    tab_reg, tab_inv = st.tabs(["🛒 Registrar Venta", "📦 Consultar Inventario"])
+    tab_ocr = tab_dash = tab_hist = None
 
 # ------------------------------------------------------------------------------
 # TAB 1: REGISTRAR MOVIMIENTO (Admin: Todo | Empleado: Solo Ventas)
@@ -1249,113 +1250,6 @@ with tab_reg:
                 st.session_state["cart"] = []
                 st.rerun()
 
-if not is_admin:
-    st.stop()
-
-# ------------------------------------------------------------------------------
-# TAB 2: DASHBOARD Y CONSULTA POR RANGO DE FECHAS
-# ------------------------------------------------------------------------------
-with tab_dash:
-    st.subheader("Resumen General del Negocio")
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Total Productos (SKUs)", f"{len(df_inv):,}")
-    k2.metric("Unidades en Stock", f"{int(df_inv['Stock Actual'].sum()):,}")
-    k3.metric("Valor Inv. al Costo", f"${int(df_inv['Valor Inv. Costo'].sum()):,}")
-    k4.metric("Valor Inv. a Venta", f"${int(df_inv['Valor Inv. Venta'].sum()):,}")
-
-    k5, k6, k7, k8 = st.columns(4)
-    util_pot = int(df_inv["Valor Inv. Venta"].sum() - df_inv["Valor Inv. Costo"].sum())
-    k5.metric("Utilidad Bruta Potencial", f"${util_pot:,}")
-    k6.metric("🟢 Productos OK", int((df_inv["Estado"] == "🟢 OK").sum()))
-    k7.metric("🟡 Por Pedir", int((df_inv["Estado"] == "🟡 PEDIR").sum()))
-    k8.metric("🔴 Agotados", int((df_inv["Estado"] == "🔴 AGOTADO").sum()))
-
-    st.divider()
-    st.subheader("📅 Consulta de Compras y Ventas por Rango de Fechas")
-
-    f1, f2, f3, f4 = st.columns([1, 1, 1.5, 1])
-    with f1:
-        f_desde = st.date_input("Desde", value=datetime.date.today().replace(day=1), format="DD/MM/YYYY", key="dash_desde")
-    with f2:
-        f_hasta = st.date_input("Hasta", value=datetime.date.today(), format="DD/MM/YYYY", key="dash_hasta")
-    with f3:
-        prod_filtro = st.selectbox("Producto (Opcional)", ["(Todos los productos)"] + sorted(df_inv["Producto"].tolist()), key="dash_prod")
-    with f4:
-        tipo_filtro = st.selectbox("Tipo (Opcional)", ["(Todos)", "ENTRADA", "SALIDA", "AJUSTE"], key="dash_tipo")
-
-    if not df_mov.empty:
-        df_rango = df_mov.copy()
-        df_rango = df_rango[df_rango["Fecha"].notna()]
-        df_rango = df_rango[(df_rango["Fecha"] >= f_desde) & (df_rango["Fecha"] <= f_hasta)]
-        if prod_filtro != "(Todos los productos)":
-            df_rango = df_rango[df_rango["Producto"] == prod_filtro]
-        if tipo_filtro != "(Todos)":
-            df_rango = df_rango[df_rango["Tipo"] == tipo_filtro]
-
-        c_ent = df_rango[df_rango["Tipo"] == "ENTRADA"]
-        c_sal = df_rango[df_rango["Tipo"] == "SALIDA"]
-        c_aju = df_rango[df_rango["Tipo"] == "AJUSTE"]
-
-        r1, r2, r3, r4, r5 = st.columns(5)
-        r1.metric("Compras (Und)", f"{int(c_ent['Cantidad'].sum()):,}")
-        r2.metric("Compras ($ COP)", f"${int(c_ent['Total'].sum()):,}")
-        r3.metric("Ventas (Und)", f"{int(c_sal['Cantidad'].sum()):,}")
-        r4.metric("Ventas ($ COP)", f"${int(c_sal['Total'].sum()):,}")
-        r5.metric("Ajustes / Dañados (Und)", f"{int(c_aju['Cantidad'].sum()):,}")
-
-        if not df_rango.empty:
-            st.dataframe(
-                df_rango.drop(columns=["fila_excel"]),
-                width="stretch",
-                hide_index=True,
-            )
-
-            # Cuadre de Caja por Medio de Pago en el rango seleccionado
-            if not c_sal.empty:
-                st.markdown("##### 💳 Cuadre de Ventas por Medio de Pago (en el rango)")
-                df_cuadre = (
-                    c_sal.assign(**{"Medio de Pago": c_sal["Medio de Pago"].replace("", "Sin especificar")})
-                    .groupby("Medio de Pago", as_index=False)
-                    .agg(Operaciones=("Cantidad", "count"), Unidades=("Cantidad", "sum"), Total_COP=("Total", "sum"))
-                )
-                st.dataframe(df_cuadre, width="stretch", hide_index=True)
-        else:
-            st.info("No hay movimientos registrados con fecha dentro de ese rango.")
-    else:
-        st.info("Aún no hay movimientos registrados.")
-
-    st.divider()
-    st.subheader("🚨 Productos Agotados o Por Pedir (Lista de Reposición)")
-    df_alertas = df_inv[df_inv["Estado"] != "🟢 OK"][
-        ["SKU", "Categoría", "Producto", "Stock Actual", "Stock Mín.", "Estado", "Costo c/IVA"]
-    ].copy()
-    if df_alertas.empty:
-        st.success("🎉 ¡Todo el inventario está en verde (🟢 OK)!")
-    else:
-        st.dataframe(df_alertas, width="stretch", hide_index=True)
-        csv_alertas = df_alertas.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "📥 Descargar Lista de Pedido (CSV)",
-            data=csv_alertas,
-            file_name=f"Lista_Pedido_{datetime.date.today().strftime('%Y-%m-%d')}.csv",
-            mime="text/csv",
-        )
-
-    st.divider()
-    st.subheader("📦 Valorización por Categoría")
-    df_cat = (
-        df_inv.groupby("Categoría", as_index=False)
-        .agg(
-            SKUs=("SKU", "count"),
-            Unidades=("Stock Actual", "sum"),
-            Costo_Total=("Valor Inv. Costo", "sum"),
-            Venta_Total=("Valor Inv. Venta", "sum"),
-        )
-    )
-    df_cat["Utilidad_Potencial"] = df_cat["Venta_Total"] - df_cat["Costo_Total"]
-    st.dataframe(df_cat, width="stretch", hide_index=True)
-    st.bar_chart(df_cat.set_index("Categoría")[["Costo_Total", "Venta_Total"]])
-
 # ------------------------------------------------------------------------------
 # TAB 3: INVENTARIO COMPLETO + EDICIÓN RÁPIDA DE PRECIOS/STOCK
 # ------------------------------------------------------------------------------
@@ -1592,6 +1486,113 @@ with tab_inv:
                     st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder agregar el producto.")
                 except Exception as e:
                     st.error(f"❌ Error al crear el producto: {e}")
+
+if not is_admin:
+    st.stop()
+
+# ------------------------------------------------------------------------------
+# TAB 2: DASHBOARD Y CONSULTA POR RANGO DE FECHAS
+# ------------------------------------------------------------------------------
+with tab_dash:
+    st.subheader("Resumen General del Negocio")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Total Productos (SKUs)", f"{len(df_inv):,}")
+    k2.metric("Unidades en Stock", f"{int(df_inv['Stock Actual'].sum()):,}")
+    k3.metric("Valor Inv. al Costo", f"${int(df_inv['Valor Inv. Costo'].sum()):,}")
+    k4.metric("Valor Inv. a Venta", f"${int(df_inv['Valor Inv. Venta'].sum()):,}")
+
+    k5, k6, k7, k8 = st.columns(4)
+    util_pot = int(df_inv["Valor Inv. Venta"].sum() - df_inv["Valor Inv. Costo"].sum())
+    k5.metric("Utilidad Bruta Potencial", f"${util_pot:,}")
+    k6.metric("🟢 Productos OK", int((df_inv["Estado"] == "🟢 OK").sum()))
+    k7.metric("🟡 Por Pedir", int((df_inv["Estado"] == "🟡 PEDIR").sum()))
+    k8.metric("🔴 Agotados", int((df_inv["Estado"] == "🔴 AGOTADO").sum()))
+
+    st.divider()
+    st.subheader("📅 Consulta de Compras y Ventas por Rango de Fechas")
+
+    f1, f2, f3, f4 = st.columns([1, 1, 1.5, 1])
+    with f1:
+        f_desde = st.date_input("Desde", value=datetime.date.today().replace(day=1), format="DD/MM/YYYY", key="dash_desde")
+    with f2:
+        f_hasta = st.date_input("Hasta", value=datetime.date.today(), format="DD/MM/YYYY", key="dash_hasta")
+    with f3:
+        prod_filtro = st.selectbox("Producto (Opcional)", ["(Todos los productos)"] + sorted(df_inv["Producto"].tolist()), key="dash_prod")
+    with f4:
+        tipo_filtro = st.selectbox("Tipo (Opcional)", ["(Todos)", "ENTRADA", "SALIDA", "AJUSTE"], key="dash_tipo")
+
+    if not df_mov.empty:
+        df_rango = df_mov.copy()
+        df_rango = df_rango[df_rango["Fecha"].notna()]
+        df_rango = df_rango[(df_rango["Fecha"] >= f_desde) & (df_rango["Fecha"] <= f_hasta)]
+        if prod_filtro != "(Todos los productos)":
+            df_rango = df_rango[df_rango["Producto"] == prod_filtro]
+        if tipo_filtro != "(Todos)":
+            df_rango = df_rango[df_rango["Tipo"] == tipo_filtro]
+
+        c_ent = df_rango[df_rango["Tipo"] == "ENTRADA"]
+        c_sal = df_rango[df_rango["Tipo"] == "SALIDA"]
+        c_aju = df_rango[df_rango["Tipo"] == "AJUSTE"]
+
+        r1, r2, r3, r4, r5 = st.columns(5)
+        r1.metric("Compras (Und)", f"{int(c_ent['Cantidad'].sum()):,}")
+        r2.metric("Compras ($ COP)", f"${int(c_ent['Total'].sum()):,}")
+        r3.metric("Ventas (Und)", f"{int(c_sal['Cantidad'].sum()):,}")
+        r4.metric("Ventas ($ COP)", f"${int(c_sal['Total'].sum()):,}")
+        r5.metric("Ajustes / Dañados (Und)", f"{int(c_aju['Cantidad'].sum()):,}")
+
+        if not df_rango.empty:
+            st.dataframe(
+                df_rango.drop(columns=["fila_excel"]),
+                width="stretch",
+                hide_index=True,
+            )
+
+            # Cuadre de Caja por Medio de Pago en el rango seleccionado
+            if not c_sal.empty:
+                st.markdown("##### 💳 Cuadre de Ventas por Medio de Pago (en el rango)")
+                df_cuadre = (
+                    c_sal.assign(**{"Medio de Pago": c_sal["Medio de Pago"].replace("", "Sin especificar")})
+                    .groupby("Medio de Pago", as_index=False)
+                    .agg(Operaciones=("Cantidad", "count"), Unidades=("Cantidad", "sum"), Total_COP=("Total", "sum"))
+                )
+                st.dataframe(df_cuadre, width="stretch", hide_index=True)
+        else:
+            st.info("No hay movimientos registrados con fecha dentro de ese rango.")
+    else:
+        st.info("Aún no hay movimientos registrados.")
+
+    st.divider()
+    st.subheader("🚨 Productos Agotados o Por Pedir (Lista de Reposición)")
+    df_alertas = df_inv[df_inv["Estado"] != "🟢 OK"][
+        ["SKU", "Categoría", "Producto", "Stock Actual", "Stock Mín.", "Estado", "Costo c/IVA"]
+    ].copy()
+    if df_alertas.empty:
+        st.success("🎉 ¡Todo el inventario está en verde (🟢 OK)!")
+    else:
+        st.dataframe(df_alertas, width="stretch", hide_index=True)
+        csv_alertas = df_alertas.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "📥 Descargar Lista de Pedido (CSV)",
+            data=csv_alertas,
+            file_name=f"Lista_Pedido_{datetime.date.today().strftime('%Y-%m-%d')}.csv",
+            mime="text/csv",
+        )
+
+    st.divider()
+    st.subheader("📦 Valorización por Categoría")
+    df_cat = (
+        df_inv.groupby("Categoría", as_index=False)
+        .agg(
+            SKUs=("SKU", "count"),
+            Unidades=("Stock Actual", "sum"),
+            Costo_Total=("Valor Inv. Costo", "sum"),
+            Venta_Total=("Valor Inv. Venta", "sum"),
+        )
+    )
+    df_cat["Utilidad_Potencial"] = df_cat["Venta_Total"] - df_cat["Costo_Total"]
+    st.dataframe(df_cat, width="stretch", hide_index=True)
+    st.bar_chart(df_cat.set_index("Categoría")[["Costo_Total", "Venta_Total"]])
 
 # ------------------------------------------------------------------------------
 # TAB 4: HISTORIAL INTERACTIVO (TIPO EXCEL — CON FRAGMENT ULTRA-RÁPIDO)
