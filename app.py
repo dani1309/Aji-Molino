@@ -912,7 +912,7 @@ def get_admin_pin():
             return str(st.secrets["ADMIN_PIN"]).strip()
     except Exception:
         pass
-    return os.environ.get("ADMIN_PIN", "2026").strip()
+    return os.environ.get("ADMIN_PIN", "1309").strip()
 
 
 if "user_role" not in st.session_state:
