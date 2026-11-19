@@ -879,6 +879,19 @@ else:
 
 df_inv, df_mov = load_data()
 
+
+@st.dialog("✅ ¡Guardado con éxito!")
+def mostrar_popup_guardado(mensaje: str):
+    st.success(mensaje)
+    if st.button("Aceptar", type="primary", width="stretch"):
+        st.rerun()
+
+
+if "popup_msg" in st.session_state:
+    _msg = st.session_state.pop("popup_msg")
+    st.toast(_msg, icon="✅")
+    mostrar_popup_guardado(_msg)
+
 tab_reg, tab_ocr, tab_dash, tab_inv, tab_hist = st.tabs(
     [
         "🛒 Registrar Movimiento",
@@ -1036,9 +1049,10 @@ with tab_reg:
                 )
                 st.session_state.pop("hist_work", None)
                 st.session_state["hist_ver"] = st.session_state.get("hist_ver", 0) + 1
-                st.success(
-                    f"✅ ¡Guardado en fila {fila_guardada} de `LISTADO_VENTA.xlsx`! "
-                    f"**{tipo_code}** de **{cantidad} x {producto_sel}** ({fecha_mov.strftime('%d/%m/%Y')}) — Total: **${total_mov:,}**"
+                destino_txt = "Google Sheets" if is_cloud_mode() else "LISTADO_VENTA.xlsx"
+                st.session_state["popup_msg"] = (
+                    f"¡Movimiento guardado en {destino_txt} (fila {fila_guardada})!\n\n"
+                    f"**{tipo_code}** · **{cantidad} x {producto_sel}** ({fecha_mov.strftime('%d/%m/%Y')}) — Total: **${total_mov:,} COP**"
                 )
                 st.rerun()
             except PermissionError:
@@ -1075,7 +1089,8 @@ with tab_reg:
                     st.session_state["cart"] = []
                     st.session_state.pop("hist_work", None)
                     st.session_state["hist_ver"] = st.session_state.get("hist_ver", 0) + 1
-                    st.success(f"✅ ¡Carrito guardado en filas {filas[0]} a {filas[-1]} de `LISTADO_VENTA.xlsx`!")
+                    destino_txt = "Google Sheets" if is_cloud_mode() else "LISTADO_VENTA.xlsx"
+                    st.session_state["popup_msg"] = f"¡Carrito guardado en {destino_txt} (filas {filas[0]} a {filas[-1]})!"
                     st.rerun()
                 except PermissionError:
                     st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder guardar el carrito.")
@@ -1234,7 +1249,7 @@ with tab_inv:
         if st.button("💾 Guardar Cambios del Producto"):
             try:
                 update_product_in_excel(row_e["fila_excel"], new_sini, new_smin, new_cbase, new_pvf, new_obs)
-                st.success(f"✅ Producto **{prod_edit}** actualizado en `LISTADO_VENTA.xlsx`.")
+                st.session_state["popup_msg"] = f"Producto **{prod_edit}** actualizado correctamente."
                 st.rerun()
             except PermissionError:
                 st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder guardar los cambios.")
@@ -1269,7 +1284,7 @@ with tab_inv:
                         new_sku, new_cat, new_desc, new_pres,
                         new_p_sini, new_p_smin, new_p_cbase, new_p_iva, 0.30, new_p_pvf, new_p_obs
                     )
-                    st.success(f"✅ Producto **{new_desc.strip()}** agregado en la fila {fila_nueva} de `LISTADO_VENTA.xlsx`.")
+                    st.session_state["popup_msg"] = f"Producto **{new_desc.strip()}** agregado al catálogo (fila {fila_nueva})."
                     st.rerun()
                 except PermissionError:
                     st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder agregar el producto.")
@@ -1404,7 +1419,7 @@ def render_historial_interactivo(df_inv_local, df_mov_local):
                 save_movements_table(edited_df)
                 st.session_state.pop("hist_work", None)
                 st.session_state["hist_ver"] += 1
-                st.success("✅ ¡Tabla sincronizada con `LISTADO_VENTA.xlsx`! Stock y totales recalculados.")
+                st.session_state["popup_msg"] = "¡Tabla de movimientos guardada! Stock y totales recalculados."
                 st.rerun()
             except PermissionError:
                 st.error(
@@ -1578,7 +1593,8 @@ with tab_ocr:
                     st.session_state.pop("ocr_rows", None)
                     st.session_state.pop("hist_work", None)
                     st.session_state["hist_ver"] = st.session_state.get("hist_ver", 0) + 1
-                    st.success(f"✅ ¡Guardadas {len(filas)} líneas de la libreta en `LISTADO_VENTA.xlsx` (filas {filas[0]} a {filas[-1]})!")
+                    destino_txt = "Google Sheets" if is_cloud_mode() else "LISTADO_VENTA.xlsx"
+                    st.session_state["popup_msg"] = f"¡Guardadas {len(filas)} líneas de la libreta en {destino_txt} (filas {filas[0]} a {filas[-1]})!"
                     st.rerun()
                 except PermissionError:
                     st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder guardar.")
