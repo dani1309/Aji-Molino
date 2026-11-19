@@ -1257,86 +1257,87 @@ with tab_inv:
     st.subheader("Catálogo e Inventario Actual (138+ productos)")
 
     # Bloque optimizado para celular: botones grandes sin tener que editar tablas anchas
-    with st.container(border=True):
-        st.markdown("#### 📱 Cambio Rápido de Stock (Modo Celular)")
-        st.caption("Ideal desde el celular: busca el producto, ajusta el número con **- / +** y guarda en un toque.")
-        m_prod = st.selectbox(
-            "🔍 Producto",
-            sorted(df_inv["Producto"].tolist()),
-            key="mob_stock_prod",
-        )
-        m_row = df_inv[df_inv["Producto"] == m_prod].iloc[0]
+    if is_admin:
+        with st.container(border=True):
+            st.markdown("#### 📱 Cambio Rápido de Stock (Modo Celular)")
+            st.caption("Ideal desde el celular: busca el producto, ajusta el número con **- / +** y guarda en un toque.")
+            m_prod = st.selectbox(
+                "🔍 Producto",
+                sorted(df_inv["Producto"].tolist()),
+                key="mob_stock_prod",
+            )
+            m_row = df_inv[df_inv["Producto"] == m_prod].iloc[0]
 
-        mc1, mc2, mc3 = st.columns(3)
-        mc1.metric("Stock Actual", f"{int(m_row['Stock Actual'])} und", m_row["Estado"])
-        mc2.metric("Stock Inicial", f"{int(m_row['Stock Inicial'])} und")
-        mc3.metric("Stock Mínimo", f"{int(m_row['Stock Mín.'])} und")
+            mc1, mc2, mc3 = st.columns(3)
+            mc1.metric("Stock Actual", f"{int(m_row['Stock Actual'])} und", m_row["Estado"])
+            mc2.metric("Stock Inicial", f"{int(m_row['Stock Inicial'])} und")
+            mc3.metric("Stock Mínimo", f"{int(m_row['Stock Mín.'])} und")
 
-        m_modo = st.radio(
-            "¿Qué quieres ajustar?",
-            ["🎯 Stock Actual (Conteo físico)", "📦 Stock Inicial directamente"],
-            horizontal=True,
-            key="mob_stock_modo",
-        )
+            m_modo = st.radio(
+                "¿Qué quieres ajustar?",
+                ["🎯 Stock Actual (Conteo físico)", "📦 Stock Inicial directamente"],
+                horizontal=True,
+                key="mob_stock_modo",
+            )
 
-        val_def = int(m_row["Stock Actual"]) if "Actual" in m_modo else int(m_row["Stock Inicial"])
-        nuevo_val = st.number_input(
-            "Nueva cantidad",
-            min_value=0,
-            step=1,
-            value=val_def,
-            key=f"mob_val_{m_prod}_{m_modo}",
-        )
+            val_def = int(m_row["Stock Actual"]) if "Actual" in m_modo else int(m_row["Stock Inicial"])
+            nuevo_val = st.number_input(
+                "Nueva cantidad",
+                min_value=0,
+                step=1,
+                value=val_def,
+                key=f"mob_val_{m_prod}_{m_modo}",
+            )
 
-        if st.button("✅ Guardar Nuevo Stock", type="primary", width="stretch", key="mob_btn_save"):
-            try:
-                if "Actual" in m_modo:
-                    # Calcular el Stock Inicial necesario para que Stock Actual quede exactamente en nuevo_val
-                    # (o si prefieres ajuste, aquí mantiene Entradas/Salidas intactas ajustando Stock Inicial)
-                    diff = int(nuevo_val) - int(m_row["Stock Actual"])
-                    new_s_ini = max(0, int(m_row["Stock Inicial"]) + diff)
-                    if int(m_row["Stock Inicial"]) + diff < 0:
-                        # Si quedaría negativo el inicial, registramos un AJUSTE en MOVIMIENTOS
-                        save_movement(
-                            datetime.date.today(),
-                            "AJUSTE",
-                            m_prod,
-                            diff,
-                            "Conteo físico celular",
-                            "Ajuste Interno",
-                            f"Ajuste de {int(m_row['Stock Actual'])} a {int(nuevo_val)}",
-                        )
+            if st.button("✅ Guardar Nuevo Stock", type="primary", width="stretch", key="mob_btn_save"):
+                try:
+                    if "Actual" in m_modo:
+                        # Calcular el Stock Inicial necesario para que Stock Actual quede exactamente en nuevo_val
+                        # (o si prefieres ajuste, aquí mantiene Entradas/Salidas intactas ajustando Stock Inicial)
+                        diff = int(nuevo_val) - int(m_row["Stock Actual"])
+                        new_s_ini = max(0, int(m_row["Stock Inicial"]) + diff)
+                        if int(m_row["Stock Inicial"]) + diff < 0:
+                            # Si quedaría negativo el inicial, registramos un AJUSTE en MOVIMIENTOS
+                            save_movement(
+                                datetime.date.today(),
+                                "AJUSTE",
+                                m_prod,
+                                diff,
+                                "Conteo físico celular",
+                                "Ajuste Interno",
+                                f"Ajuste de {int(m_row['Stock Actual'])} a {int(nuevo_val)}",
+                            )
+                        else:
+                            update_inventory_bulk([
+                                {
+                                    "fila_excel": m_row["fila_excel"],
+                                    "stock_ini": new_s_ini,
+                                    "stock_min": int(m_row["Stock Mín."]),
+                                    "costo_base": int(m_row["Costo Base"]),
+                                    "pvf": int(m_row["PVF"]),
+                                    "obs": str(m_row["Observaciones"] or ""),
+                                }
+                            ])
+                        st.session_state["popup_msg"] = f"Stock Actual de **{m_prod}** actualizado a **{int(nuevo_val)} und**."
                     else:
                         update_inventory_bulk([
                             {
                                 "fila_excel": m_row["fila_excel"],
-                                "stock_ini": new_s_ini,
+                                "stock_ini": int(nuevo_val),
                                 "stock_min": int(m_row["Stock Mín."]),
                                 "costo_base": int(m_row["Costo Base"]),
                                 "pvf": int(m_row["PVF"]),
                                 "obs": str(m_row["Observaciones"] or ""),
                             }
                         ])
-                    st.session_state["popup_msg"] = f"Stock Actual de **{m_prod}** actualizado a **{int(nuevo_val)} und**."
-                else:
-                    update_inventory_bulk([
-                        {
-                            "fila_excel": m_row["fila_excel"],
-                            "stock_ini": int(nuevo_val),
-                            "stock_min": int(m_row["Stock Mín."]),
-                            "costo_base": int(m_row["Costo Base"]),
-                            "pvf": int(m_row["PVF"]),
-                            "obs": str(m_row["Observaciones"] or ""),
-                        }
-                    ])
-                    st.session_state["popup_msg"] = f"Stock Inicial de **{m_prod}** actualizado a **{int(nuevo_val)} und**."
-                st.session_state.pop("hist_work", None)
-                st.session_state["hist_ver"] = st.session_state.get("hist_ver", 0) + 1
-                st.rerun()
-            except PermissionError:
-                st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder guardar el cambio.")
-            except Exception as e:
-                st.error(f"❌ Error al actualizar stock: {e}")
+                        st.session_state["popup_msg"] = f"Stock Inicial de **{m_prod}** actualizado a **{int(nuevo_val)} und**."
+                    st.session_state.pop("hist_work", None)
+                    st.session_state["hist_ver"] = st.session_state.get("hist_ver", 0) + 1
+                    st.rerun()
+                except PermissionError:
+                    st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder guardar el cambio.")
+                except Exception as e:
+                    st.error(f"❌ Error al actualizar stock: {e}")
 
     st.divider()
     ci1, ci2, ci3 = st.columns([2, 1.5, 1])
@@ -1359,133 +1360,137 @@ with tab_inv:
     if est_sel != "(Todos)":
         df_view = df_view[df_view["Estado"] == est_sel]
 
-    cols_mostrar = [
-        "SKU", "Categoría", "Producto", "Presentación",
-        "Stock Inicial", "Entradas (+)", "Salidas (-)", "Ajustes (+/-)",
-        "Stock Actual", "Stock Mín.", "Estado", "Costo Base", "Costo c/IVA", "PVF",
-        "Valor Inv. Venta", "Observaciones",
-    ]
-    st.caption("✏️ Puedes modificar directamente en la tabla **Stock Inicial**, **Stock Mín.**, **Costo Base**, **PVF** u **Observaciones** y luego guardar.")
-    df_inv_edit_src = df_view[cols_mostrar].copy()
-    edited_inv_df = st.data_editor(
-        df_inv_edit_src,
-        width="stretch",
-        hide_index=True,
-        height=460,
-        disabled=[
+    if not is_admin:
+        cols_emp = ["SKU", "Categoría", "Producto", "Presentación", "Stock Actual", "Estado", "PVF", "Observaciones"]
+        st.dataframe(df_view[cols_emp], width="stretch", hide_index=True, height=480)
+    else:
+        cols_mostrar = [
             "SKU", "Categoría", "Producto", "Presentación",
-            "Entradas (+)", "Salidas (-)", "Ajustes (+/-)",
-            "Stock Actual", "Estado", "Costo c/IVA", "Valor Inv. Venta",
-        ],
-        column_config={
-            "Stock Inicial": st.column_config.NumberColumn("Stock Inicial ✏️", min_value=0, step=1),
-            "Stock Mín.": st.column_config.NumberColumn("Stock Mín. ✏️", min_value=0, step=1),
-            "Costo Base": st.column_config.NumberColumn("Costo Base ✏️", min_value=0, step=100, format="$%d"),
-            "Costo c/IVA": st.column_config.NumberColumn("Costo c/IVA", format="$%d"),
-            "PVF": st.column_config.NumberColumn("PVF ✏️", min_value=0, step=500, format="$%d"),
-            "Valor Inv. Venta": st.column_config.NumberColumn("Valor Inv. Venta", format="$%d"),
-            "Observaciones": st.column_config.TextColumn("Observaciones ✏️"),
-        },
-        key="inv_bulk_editor",
-    )
+            "Stock Inicial", "Entradas (+)", "Salidas (-)", "Ajustes (+/-)",
+            "Stock Actual", "Stock Mín.", "Estado", "Costo Base", "Costo c/IVA", "PVF",
+            "Valor Inv. Venta", "Observaciones",
+        ]
+        st.caption("✏️ Puedes modificar directamente en la tabla **Stock Inicial**, **Stock Mín.**, **Costo Base**, **PVF** u **Observaciones** y luego guardar.")
+        df_inv_edit_src = df_view[cols_mostrar].copy()
+        edited_inv_df = st.data_editor(
+            df_inv_edit_src,
+            width="stretch",
+            hide_index=True,
+            height=460,
+            disabled=[
+                "SKU", "Categoría", "Producto", "Presentación",
+                "Entradas (+)", "Salidas (-)", "Ajustes (+/-)",
+                "Stock Actual", "Estado", "Costo c/IVA", "Valor Inv. Venta",
+            ],
+            column_config={
+                "Stock Inicial": st.column_config.NumberColumn("Stock Inicial ✏️", min_value=0, step=1),
+                "Stock Mín.": st.column_config.NumberColumn("Stock Mín. ✏️", min_value=0, step=1),
+                "Costo Base": st.column_config.NumberColumn("Costo Base ✏️", min_value=0, step=100, format="$%d"),
+                "Costo c/IVA": st.column_config.NumberColumn("Costo c/IVA", format="$%d"),
+                "PVF": st.column_config.NumberColumn("PVF ✏️", min_value=0, step=500, format="$%d"),
+                "Valor Inv. Venta": st.column_config.NumberColumn("Valor Inv. Venta", format="$%d"),
+                "Observaciones": st.column_config.TextColumn("Observaciones ✏️"),
+            },
+            key="inv_bulk_editor",
+        )
 
-    if st.button("💾 Guardar Cambios de Inventario Inicial / Precios", type="primary", width="stretch"):
-        changes = []
-        orig_by_prod = df_view.set_index("Producto").to_dict(orient="index")
-        for _, r_ed in edited_inv_df.iterrows():
-            prod_k = str(r_ed["Producto"])
-            orig = orig_by_prod.get(prod_k)
-            if not orig:
-                continue
-            s_ini = int(round(to_float(r_ed["Stock Inicial"], 0)))
-            s_min = int(round(to_float(r_ed["Stock Mín."], 0)))
-            c_bas = int(round(to_float(r_ed["Costo Base"], 0)))
-            pvf_v = int(round(to_float(r_ed["PVF"], 0)))
-            obs_v = "" if pd.isna(r_ed["Observaciones"]) else str(r_ed["Observaciones"] or "").strip()
+        if st.button("💾 Guardar Cambios de Inventario Inicial / Precios", type="primary", width="stretch"):
+            changes = []
+            orig_by_prod = df_view.set_index("Producto").to_dict(orient="index")
+            for _, r_ed in edited_inv_df.iterrows():
+                prod_k = str(r_ed["Producto"])
+                orig = orig_by_prod.get(prod_k)
+                if not orig:
+                    continue
+                s_ini = int(round(to_float(r_ed["Stock Inicial"], 0)))
+                s_min = int(round(to_float(r_ed["Stock Mín."], 0)))
+                c_bas = int(round(to_float(r_ed["Costo Base"], 0)))
+                pvf_v = int(round(to_float(r_ed["PVF"], 0)))
+                obs_v = "" if pd.isna(r_ed["Observaciones"]) else str(r_ed["Observaciones"] or "").strip()
 
-            if (
-                s_ini != int(orig["Stock Inicial"])
-                or s_min != int(orig["Stock Mín."])
-                or c_bas != int(orig["Costo Base"])
-                or pvf_v != int(orig["PVF"])
-                or obs_v != str(orig["Observaciones"] or "").strip()
-            ):
-                changes.append(
-                    {
-                        "fila_excel": orig["fila_excel"],
-                        "stock_ini": s_ini,
-                        "stock_min": s_min,
-                        "costo_base": c_bas,
-                        "pvf": pvf_v,
-                        "obs": obs_v,
-                    }
-                )
-        if not changes:
-            st.info("No hay cambios pendientes por guardar en la tabla.")
-        else:
-            try:
-                n_upd = update_inventory_bulk(changes)
-                st.session_state["popup_msg"] = f"¡Se actualizaron **{n_upd} producto(s)** en el inventario!"
-                st.rerun()
-            except PermissionError:
-                st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder guardar los cambios.")
-            except Exception as e:
-                st.error(f"❌ Error al guardar cambios: {e}")
-
-    with st.expander("✏️ Editar Costo, Precio de Venta (PVF) o Stock Mínimo de un producto"):
-        prod_edit = st.selectbox("Selecciona el producto a editar", sorted(df_inv["Producto"].tolist()), key="edit_prod")
-        row_e = df_inv[df_inv["Producto"] == prod_edit].iloc[0]
-        e1, e2, e3, e4 = st.columns(4)
-        new_sini = e1.number_input("Stock Inicial", value=int(row_e["Stock Inicial"]), step=1)
-        new_smin = e2.number_input("Stock Mínimo", value=int(row_e["Stock Mín."]), step=1)
-        new_cbase = e3.number_input("Costo Base (sin IVA)", value=int(row_e["Costo Base"]), step=100)
-        new_pvf = e4.number_input("Precio Venta Final (PVF)", value=int(row_e["PVF"]), step=500)
-        new_obs = st.text_input("Observaciones", value=str(row_e["Observaciones"]))
-
-        if st.button("💾 Guardar Cambios del Producto"):
-            try:
-                update_product_in_excel(row_e["fila_excel"], new_sini, new_smin, new_cbase, new_pvf, new_obs)
-                st.session_state["popup_msg"] = f"Producto **{prod_edit}** actualizado correctamente."
-                st.rerun()
-            except PermissionError:
-                st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder guardar los cambios.")
-
-    with st.expander("➕ Crear Nuevo Producto en el Catálogo"):
-        n1, n2, n3 = st.columns([1, 1.5, 1])
-        new_sku = n1.text_input("SKU / Código *", placeholder="Ej. AJI-003", key="new_sku")
-        cats_existentes = sorted(df_inv["Categoría"].unique().tolist())
-        new_cat = n2.selectbox("Categoría *", cats_existentes, key="new_cat")
-        new_pres = n3.text_input("Presentación", value="und", key="new_pres")
-
-        new_desc = st.text_input("Nombre / Descripción del Producto *", placeholder="Ej. SALSA HABANERO MANGO 250ML", key="new_desc")
-
-        n4, n5, n6, n7, n8 = st.columns(5)
-        new_p_sini = n4.number_input("Stock Inicial", min_value=0, step=1, value=0, key="new_p_sini")
-        new_p_smin = n5.number_input("Stock Mínimo", min_value=0, step=1, value=3, key="new_p_smin")
-        new_p_cbase = n6.number_input("Costo Base (sin IVA)", min_value=0, step=100, value=0, key="new_p_cbase")
-        new_p_iva = n7.selectbox("IVA %", [0.19, 0.0, 0.05], format_func=lambda x: f"{int(x*100)}%", key="new_p_iva")
-        new_p_pvf = n8.number_input("Precio Venta Final (PVF)", min_value=0, step=500, value=0, key="new_p_pvf")
-        new_p_obs = st.text_input("Observaciones", key="new_p_obs")
-
-        if st.button("➕ Agregar Producto al Inventario", type="primary"):
-            if not new_sku.strip() or not new_desc.strip():
-                st.warning("⚠️ El SKU y el Nombre del Producto son obligatorios.")
-            elif new_desc.strip().upper() in df_inv["Producto"].str.upper().values:
-                st.warning("⚠️ Ya existe un producto con ese mismo nombre.")
-            elif new_sku.strip().upper() in df_inv["SKU"].str.upper().values:
-                st.warning("⚠️ Ya existe un producto con ese mismo SKU.")
+                if (
+                    s_ini != int(orig["Stock Inicial"])
+                    or s_min != int(orig["Stock Mín."])
+                    or c_bas != int(orig["Costo Base"])
+                    or pvf_v != int(orig["PVF"])
+                    or obs_v != str(orig["Observaciones"] or "").strip()
+                ):
+                    changes.append(
+                        {
+                            "fila_excel": orig["fila_excel"],
+                            "stock_ini": s_ini,
+                            "stock_min": s_min,
+                            "costo_base": c_bas,
+                            "pvf": pvf_v,
+                            "obs": obs_v,
+                        }
+                    )
+            if not changes:
+                st.info("No hay cambios pendientes por guardar en la tabla.")
             else:
                 try:
-                    fila_nueva = create_new_product_in_excel(
-                        new_sku, new_cat, new_desc, new_pres,
-                        new_p_sini, new_p_smin, new_p_cbase, new_p_iva, 0.30, new_p_pvf, new_p_obs
-                    )
-                    st.session_state["popup_msg"] = f"Producto **{new_desc.strip()}** agregado al catálogo (fila {fila_nueva})."
+                    n_upd = update_inventory_bulk(changes)
+                    st.session_state["popup_msg"] = f"¡Se actualizaron **{n_upd} producto(s)** en el inventario!"
                     st.rerun()
                 except PermissionError:
-                    st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder agregar el producto.")
+                    st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder guardar los cambios.")
                 except Exception as e:
-                    st.error(f"❌ Error al crear el producto: {e}")
+                    st.error(f"❌ Error al guardar cambios: {e}")
+
+        with st.expander("✏️ Editar Costo, Precio de Venta (PVF) o Stock Mínimo de un producto"):
+            prod_edit = st.selectbox("Selecciona el producto a editar", sorted(df_inv["Producto"].tolist()), key="edit_prod")
+            row_e = df_inv[df_inv["Producto"] == prod_edit].iloc[0]
+            e1, e2, e3, e4 = st.columns(4)
+            new_sini = e1.number_input("Stock Inicial", value=int(row_e["Stock Inicial"]), step=1)
+            new_smin = e2.number_input("Stock Mínimo", value=int(row_e["Stock Mín."]), step=1)
+            new_cbase = e3.number_input("Costo Base (sin IVA)", value=int(row_e["Costo Base"]), step=100)
+            new_pvf = e4.number_input("Precio Venta Final (PVF)", value=int(row_e["PVF"]), step=500)
+            new_obs = st.text_input("Observaciones", value=str(row_e["Observaciones"]))
+
+            if st.button("💾 Guardar Cambios del Producto"):
+                try:
+                    update_product_in_excel(row_e["fila_excel"], new_sini, new_smin, new_cbase, new_pvf, new_obs)
+                    st.session_state["popup_msg"] = f"Producto **{prod_edit}** actualizado correctamente."
+                    st.rerun()
+                except PermissionError:
+                    st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder guardar los cambios.")
+
+        with st.expander("➕ Crear Nuevo Producto en el Catálogo"):
+            n1, n2, n3 = st.columns([1, 1.5, 1])
+            new_sku = n1.text_input("SKU / Código *", placeholder="Ej. AJI-003", key="new_sku")
+            cats_existentes = sorted(df_inv["Categoría"].unique().tolist())
+            new_cat = n2.selectbox("Categoría *", cats_existentes, key="new_cat")
+            new_pres = n3.text_input("Presentación", value="und", key="new_pres")
+
+            new_desc = st.text_input("Nombre / Descripción del Producto *", placeholder="Ej. SALSA HABANERO MANGO 250ML", key="new_desc")
+
+            n4, n5, n6, n7, n8 = st.columns(5)
+            new_p_sini = n4.number_input("Stock Inicial", min_value=0, step=1, value=0, key="new_p_sini")
+            new_p_smin = n5.number_input("Stock Mínimo", min_value=0, step=1, value=3, key="new_p_smin")
+            new_p_cbase = n6.number_input("Costo Base (sin IVA)", min_value=0, step=100, value=0, key="new_p_cbase")
+            new_p_iva = n7.selectbox("IVA %", [0.19, 0.0, 0.05], format_func=lambda x: f"{int(x*100)}%", key="new_p_iva")
+            new_p_pvf = n8.number_input("Precio Venta Final (PVF)", min_value=0, step=500, value=0, key="new_p_pvf")
+            new_p_obs = st.text_input("Observaciones", key="new_p_obs")
+
+            if st.button("➕ Agregar Producto al Inventario", type="primary"):
+                if not new_sku.strip() or not new_desc.strip():
+                    st.warning("⚠️ El SKU y el Nombre del Producto son obligatorios.")
+                elif new_desc.strip().upper() in df_inv["Producto"].str.upper().values:
+                    st.warning("⚠️ Ya existe un producto con ese mismo nombre.")
+                elif new_sku.strip().upper() in df_inv["SKU"].str.upper().values:
+                    st.warning("⚠️ Ya existe un producto con ese mismo SKU.")
+                else:
+                    try:
+                        fila_nueva = create_new_product_in_excel(
+                            new_sku, new_cat, new_desc, new_pres,
+                            new_p_sini, new_p_smin, new_p_cbase, new_p_iva, 0.30, new_p_pvf, new_p_obs
+                        )
+                        st.session_state["popup_msg"] = f"Producto **{new_desc.strip()}** agregado al catálogo (fila {fila_nueva})."
+                        st.rerun()
+                    except PermissionError:
+                        st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder agregar el producto.")
+                    except Exception as e:
+                        st.error(f"❌ Error al crear el producto: {e}")
 
 if not is_admin:
     st.stop()
