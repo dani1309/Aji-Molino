@@ -626,7 +626,7 @@ def save_movements_table(edited_df):
                 {"range": f"A{row_idx}", "values": [[fecha_v.strftime("%d/%m/%Y") if fecha_v else ""]]},
                 {"range": f"B{row_idx}", "values": [[tipo_v]]},
                 {"range": f"C{row_idx}", "values": [[prod]]},
-                {"range": f"G{row_idx}", "values": [[qty_v if qty_v > 0 else ""]]},
+                {"range": f"G{row_idx}", "values": [[qty_v if qty_v != 0 else ""]]},
                 {"range": f"J{row_idx}", "values": [[cli_v]]},
                 {"range": f"K{row_idx}", "values": [[pago_v]]},
                 {"range": f"L{row_idx}", "values": [[obs_v]]},
@@ -665,7 +665,7 @@ def save_movements_table(edited_df):
             ws_mov.cell(row_idx, 1, fecha_v).number_format = "dd/mm/yyyy"
         ws_mov.cell(row_idx, 2, tipo_v if tipo_v else None)
         ws_mov.cell(row_idx, 3, prod)
-        ws_mov.cell(row_idx, 7, qty_v if qty_v > 0 else None)
+        ws_mov.cell(row_idx, 7, qty_v if qty_v != 0 else None)
         ws_mov.cell(row_idx, 10, cli_v if cli_v else None)
         ws_mov.cell(row_idx, 11, pago_v if pago_v else None)
         ws_mov.cell(row_idx, 12, obs_v if obs_v else None)
@@ -1016,6 +1016,7 @@ with tab_reg:
                     "Crédito Cliente",
                     "Ajuste Interno",
                 ],
+                index=6 if tipo_code == "AJUSTE" else 0,
                 key="reg_pago",
             )
         with c7:
@@ -1024,14 +1025,39 @@ with tab_reg:
                 placeholder="Ej. Venta mostrador, Jhony Lopez...",
                 key="reg_cli",
             )
+
+        ajuste_signo = "➕ Sumar"
+        motivo_ajuste = ""
+        if tipo_code == "AJUSTE":
+            aj1, aj2 = st.columns(2)
+            with aj1:
+                ajuste_signo = st.radio(
+                    "⚖️ Acción en el Stock",
+                    ["➖ Restar (Dañado / Vencido / Merma)", "➕ Sumar (Sobrante)"],
+                    horizontal=True,
+                    key="reg_ajuste_signo",
+                )
+            with aj2:
+                motivo_ajuste = st.selectbox(
+                    "📌 Motivo del ajuste",
+                    ["Producto dañado / echado a perder", "Producto vencido", "Merma / pérdida", "Conteo físico", "Otro"],
+                    key="reg_ajuste_motivo",
+                )
+
         obs_mov = st.text_input("📝 Observaciones (opcional)", key="reg_obs")
 
-    total_mov = int(cantidad) * int(precio_unitario)
+    cantidad_real = -int(cantidad) if (tipo_code == "AJUSTE" and "Restar" in ajuste_signo) else int(cantidad)
+    total_mov = abs(int(cantidad_real)) * int(precio_unitario)
+    stock_nuevo_est = (
+        int(prod_row["Stock Actual"]) + cantidad_real
+        if tipo_code in ("ENTRADA", "AJUSTE")
+        else int(prod_row["Stock Actual"]) - int(cantidad)
+    )
 
     with col_info:
         st.markdown("#### 📋 Detalle del Producto")
         m1, m2 = st.columns(2)
-        m1.metric("Stock Actual", f"{prod_row['Stock Actual']} und", prod_row["Estado"])
+        m1.metric("Stock Actual", f"{prod_row['Stock Actual']} und", f"Quedará en: {stock_nuevo_est} und")
         m2.metric("SKU", prod_row["SKU"])
 
         m3, m4 = st.columns(2)
@@ -1045,49 +1071,57 @@ with tab_reg:
             f"**Total de esta línea:** **${total_mov:,} COP**"
         )
 
-        if tipo_code == "SALIDA" and cantidad > prod_row["Stock Actual"]:
+        if (tipo_code == "SALIDA" and cantidad > prod_row["Stock Actual"]) or (
+            tipo_code == "AJUSTE" and "Restar" in ajuste_signo and cantidad > prod_row["Stock Actual"]
+        ):
             st.warning(
-                f"⚠️ Atención: estás vendiendo **{cantidad}** und, pero solo hay **{prod_row['Stock Actual']}** en stock."
+                f"⚠️ Atención: estás descontando **{cantidad}** und, pero solo hay **{prod_row['Stock Actual']}** en stock."
             )
+
+    def _build_mov_notes():
+        cli_out = cliente_prov.strip()
+        if tipo_code == "AJUSTE" and not cli_out:
+            cli_out = motivo_ajuste
+        obs_out = obs_mov.strip()
+        if tipo_code == "AJUSTE" and motivo_ajuste and motivo_ajuste not in obs_out and cli_out != motivo_ajuste:
+            obs_out = f"{motivo_ajuste} | {obs_out}".strip(" |")
+        if precio_unitario != (prod_row["PVF"] if tipo_code == "SALIDA" else prod_row["Costo c/IVA"]):
+            nota_precio = f"Tarifa aplicada: ${precio_unitario:,}"
+            obs_out = f"{obs_out} | {nota_precio}".strip(" |")
+        return cli_out, obs_out
 
     btn1, btn2 = st.columns(2)
     with btn1:
         if st.button("➕ Agregar al Carrito (Varios Productos)", width="stretch"):
-            obs_final = obs_mov.strip()
-            if precio_unitario != (prod_row["PVF"] if tipo_code == "SALIDA" else prod_row["Costo c/IVA"]):
-                nota_precio = f"Tarifa aplicada: ${precio_unitario:,}"
-                obs_final = f"{obs_final} | {nota_precio}".strip(" |")
+            cli_out, obs_final = _build_mov_notes()
             st.session_state["cart"].append(
                 {
                     "fecha": fecha_mov,
                     "tipo": tipo_code,
                     "producto": producto_sel,
-                    "cantidad": int(cantidad),
+                    "cantidad": int(cantidad_real),
                     "valor_unit": int(precio_unitario),
                     "total": int(total_mov),
-                    "cliente": cliente_prov.strip(),
+                    "cliente": cli_out,
                     "pago": medio_pago,
                     "obs": obs_final,
                 }
             )
-            st.success(f"➕ Agregado al carrito: **{cantidad} x {producto_sel}** (${total_mov:,})")
+            st.success(f"➕ Agregado al carrito: **{cantidad_real:+} x {producto_sel}** (${total_mov:,})")
 
     with btn2:
-        if st.button("💾 Guardar Movimiento Directo en Excel", type="primary", width="stretch"):
+        if st.button("💾 Guardar Movimiento Directo", type="primary", width="stretch"):
             try:
-                obs_final = obs_mov.strip()
-                if precio_unitario != (prod_row["PVF"] if tipo_code == "SALIDA" else prod_row["Costo c/IVA"]):
-                    nota_precio = f"Tarifa aplicada: ${precio_unitario:,}"
-                    obs_final = f"{obs_final} | {nota_precio}".strip(" |")
+                cli_out, obs_final = _build_mov_notes()
                 fila_guardada = save_movement(
-                    fecha_mov, tipo_code, producto_sel, cantidad, cliente_prov, medio_pago, obs_final
+                    fecha_mov, tipo_code, producto_sel, cantidad_real, cli_out, medio_pago, obs_final
                 )
                 st.session_state.pop("hist_work", None)
                 st.session_state["hist_ver"] = st.session_state.get("hist_ver", 0) + 1
                 destino_txt = "Google Sheets" if is_cloud_mode() else "LISTADO_VENTA.xlsx"
                 st.session_state["popup_msg"] = (
                     f"¡Movimiento guardado en {destino_txt} (fila {fila_guardada})!\n\n"
-                    f"**{tipo_code}** · **{cantidad} x {producto_sel}** ({fecha_mov.strftime('%d/%m/%Y')}) — Total: **${total_mov:,} COP**"
+                    f"**{tipo_code}** · **{cantidad_real} x {producto_sel}** ({fecha_mov.strftime('%d/%m/%Y')}) — Stock nuevo: **{stock_nuevo_est} und**"
                 )
                 st.rerun()
             except PermissionError:
@@ -1178,12 +1212,14 @@ with tab_dash:
 
         c_ent = df_rango[df_rango["Tipo"] == "ENTRADA"]
         c_sal = df_rango[df_rango["Tipo"] == "SALIDA"]
+        c_aju = df_rango[df_rango["Tipo"] == "AJUSTE"]
 
-        r1, r2, r3, r4 = st.columns(4)
-        r1.metric("Compras (Unidades)", f"{int(c_ent['Cantidad'].sum()):,}")
+        r1, r2, r3, r4, r5 = st.columns(5)
+        r1.metric("Compras (Und)", f"{int(c_ent['Cantidad'].sum()):,}")
         r2.metric("Compras ($ COP)", f"${int(c_ent['Total'].sum()):,}")
-        r3.metric("Ventas (Unidades)", f"{int(c_sal['Cantidad'].sum()):,}")
+        r3.metric("Ventas (Und)", f"{int(c_sal['Cantidad'].sum()):,}")
         r4.metric("Ventas ($ COP)", f"${int(c_sal['Total'].sum()):,}")
+        r5.metric("Ajustes / Dañados (Und)", f"{int(c_aju['Cantidad'].sum()):,}")
 
         if not df_rango.empty:
             st.dataframe(
@@ -1530,7 +1566,7 @@ def render_historial_interactivo(df_inv_local, df_mov_local):
             ),
             "SKU": st.column_config.TextColumn("SKU (Auto)", width="small"),
             "Categoría": st.column_config.TextColumn("Categoría (Auto)", width="medium"),
-            "Cantidad": st.column_config.NumberColumn("Cantidad", min_value=1, step=1, width="small"),
+            "Cantidad": st.column_config.NumberColumn("Cantidad", step=1, width="small"),
             "Valor Unitario": st.column_config.NumberColumn("Valor Unit. (Auto)", format="$%d", width="small"),
             "Total": st.column_config.NumberColumn("Total (Auto)", format="$%d", width="small"),
             "Cliente / Proveedor": st.column_config.TextColumn("Cliente / Proveedor", width="medium"),
@@ -1563,7 +1599,7 @@ def render_historial_interactivo(df_inv_local, df_mov_local):
                 fecha_val = datetime.date.today()
                 recalc_df.at[idx_r, "Fecha"] = fecha_val
                 needs_refresh = True
-            if qty_val <= 0:
+            if qty_val == 0:
                 qty_val = 1
                 recalc_df.at[idx_r, "Cantidad"] = 1
                 needs_refresh = True
@@ -1765,7 +1801,7 @@ with tab_ocr:
                 "Texto Libreta": st.column_config.TextColumn("Lo que decía la libreta", width="medium"),
                 "Tipo": st.column_config.SelectboxColumn("Tipo", options=["SALIDA", "ENTRADA", "AJUSTE"], width="small"),
                 "Producto": st.column_config.SelectboxColumn("Producto en Catálogo", options=productos_opts_ocr, width="large"),
-                "Cantidad": st.column_config.NumberColumn("Cantidad", min_value=1, step=1, width="small"),
+                "Cantidad": st.column_config.NumberColumn("Cantidad", step=1, width="small"),
                 "Valor Unit.": st.column_config.NumberColumn("Valor Unit.", format="$%d", width="small"),
                 "Total": st.column_config.NumberColumn("Total", format="$%d", width="small"),
                 "Medio de Pago": st.column_config.SelectboxColumn("Medio de Pago", options=pagos_opts_ocr, width="medium"),
