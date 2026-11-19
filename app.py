@@ -1614,10 +1614,52 @@ def render_historial_interactivo(df_inv_local, df_mov_local):
                 st.error(f"❌ Error al guardar cambios: {e}")
     with col_b2:
         if st.button("🔄 Descartar / Recargar", width="stretch"):
-            _load_data_cached.clear()
+            _clear_all_caches()
             st.session_state.pop("hist_work", None)
             st.session_state["hist_ver"] += 1
             st.rerun()
+
+    if not df_mov_local.empty:
+        st.divider()
+        with st.expander("🗑️ Eliminar Movimientos (o Vaciar Historial de Pruebas)"):
+            st.caption("Ideal desde el celular o PC: selecciona uno o varios movimientos y bórralos en un clic.")
+            opciones_del = {
+                i: f"{r['ID Lote']} | {r['Fecha'] or 'Sin fecha'} | {r['Tipo']} | {r['Cantidad']} x {r['Producto']}"
+                for i, r in df_mov_local.iterrows()
+            }
+            sel_indices = st.multiselect(
+                "Selecciona los movimientos a eliminar",
+                options=list(opciones_del.keys()),
+                format_func=lambda idx_k: opciones_del[idx_k],
+                key="hist_del_multi",
+            )
+            cd1, cd2 = st.columns(2)
+            with cd1:
+                if st.button("🗑️ Eliminar Seleccionados", width="stretch", disabled=(len(sel_indices) == 0)):
+                    try:
+                        df_restante = df_mov_local.drop(index=sel_indices).drop(columns=["fila_excel"])
+                        save_movements_table(df_restante)
+                        st.session_state.pop("hist_work", None)
+                        st.session_state["hist_ver"] += 1
+                        st.session_state["popup_msg"] = f"Se eliminaron **{len(sel_indices)} movimiento(s)** correctamente."
+                        st.rerun()
+                    except PermissionError:
+                        st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder eliminar.")
+                    except Exception as e:
+                        st.error(f"❌ Error al eliminar: {e}")
+            with cd2:
+                confirm_wipe = st.checkbox("Confirmo vaciar TODO el historial", key="hist_confirm_wipe")
+                if st.button("🧹 Vaciar TODOS los Movimientos", width="stretch", disabled=not confirm_wipe):
+                    try:
+                        save_movements_table(pd.DataFrame(columns=df_edit_base.columns))
+                        st.session_state.pop("hist_work", None)
+                        st.session_state["hist_ver"] += 1
+                        st.session_state["popup_msg"] = "¡Historial vaciado por completo! Todos los stocks volvieron a su Stock Inicial."
+                        st.rerun()
+                    except PermissionError:
+                        st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder vaciar el historial.")
+                    except Exception as e:
+                        st.error(f"❌ Error al vaciar historial: {e}")
 
 
 with tab_hist:
