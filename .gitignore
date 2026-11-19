@@ -1,0 +1,13 @@
+# Secretos y credenciales (NUNCA subir a GitHub)
+email_config.json
+gemini_config.json
+.streamlit/secrets.toml
+
+# Archivos locales, respaldos y caché
+Backups/
+__pycache__/
+*.pyc
+.agents/
+skills-lock.json
+LISTADO_VENTA.xlsx
+Abrir_Inventario.bat
