@@ -904,13 +904,72 @@ def parse_notebook_image_with_gemini(image_bytes: bytes, mime_type: str, catalog
 
 
 # ==============================================================================
+# CONTROL DE ACCESO (EMPLEADO VS ADMINISTRADOR)
+# ==============================================================================
+def get_admin_pin():
+    try:
+        if "ADMIN_PIN" in st.secrets:
+            return str(st.secrets["ADMIN_PIN"]).strip()
+    except Exception:
+        pass
+    return os.environ.get("ADMIN_PIN", "2026").strip()
+
+
+if "user_role" not in st.session_state:
+    st.session_state["user_role"] = None
+if "user_name" not in st.session_state:
+    st.session_state["user_name"] = ""
+
+if st.session_state["user_role"] is None:
+    st.title("🌶️ Ají y Molino — Acceso al Sistema")
+    st.caption("Selecciona tu perfil para continuar:")
+
+    col_emp, col_adm = st.columns(2, gap="large")
+    with col_emp:
+        with st.container(border=True):
+            st.subheader("👤 Modo Empleado / Vendedor")
+            st.caption("Acceso rápido para registrar nuevas ventas y usar el carrito.")
+            emp_name = st.text_input("Tu nombre", placeholder="Ej. Carlos, María...", key="login_emp_name")
+            if st.button("Entrar como Vendedor", type="primary", width="stretch", key="btn_login_emp"):
+                if not emp_name.strip():
+                    st.warning("⚠️ Escribe tu nombre para registrar quién hace las ventas.")
+                else:
+                    st.session_state["user_role"] = "empleado"
+                    st.session_state["user_name"] = emp_name.strip()
+                    st.rerun()
+
+    with col_adm:
+        with st.container(border=True):
+            st.subheader("🔐 Modo Administrador")
+            st.caption("Acceso completo: Dashboard, Costos, Inventario, Libreta IA e Historial.")
+            pin_in = st.text_input("PIN de Administrador", type="password", placeholder="Ingresa el PIN", key="login_admin_pin")
+            if st.button("Entrar como Administrador", width="stretch", key="btn_login_adm"):
+                if pin_in.strip() == get_admin_pin():
+                    st.session_state["user_role"] = "admin"
+                    st.session_state["user_name"] = "Administrador"
+                    st.rerun()
+                else:
+                    st.error("❌ PIN incorrecto.")
+    st.stop()
+
+is_admin = st.session_state["user_role"] == "admin"
+
+# ==============================================================================
 # INTERFAZ GRÁFICA PRINCIPAL
 # ==============================================================================
-st.title("🌶️ Ají y Molino — Sistema de Inventario y Ventas")
-if is_cloud_mode():
-    st.caption("☁️ Conectado en vivo a **Google Sheets** (Nube 24/7)")
-else:
-    st.caption(f"💻 Modo Local conectado a: `{EXCEL_PATH.name}`")
+hdr_l, hdr_r = st.columns([4, 1.2])
+with hdr_l:
+    st.title("🌶️ Ají y Molino — Sistema de Inventario y Ventas")
+    modo_conn = "☁️ Google Sheets (Nube 24/7)" if is_cloud_mode() else f"💻 Local (`{EXCEL_PATH.name}`)"
+    rol_badge = "🔐 Administrador" if is_admin else f"👤 Vendedor: **{st.session_state['user_name']}** (Solo Ventas)"
+    st.caption(f"{modo_conn}  ·  {rol_badge}")
+with hdr_r:
+    st.write("")
+    if st.button("🚪 Cambiar Usuario", width="stretch"):
+        st.session_state["user_role"] = None
+        st.session_state["user_name"] = ""
+        st.session_state["cart"] = []
+        st.rerun()
 
 df_inv, df_mov = load_data()
 
@@ -927,21 +986,24 @@ if "popup_msg" in st.session_state:
     st.toast(_msg, icon="✅")
     mostrar_popup_guardado(_msg)
 
-tab_reg, tab_ocr, tab_dash, tab_inv, tab_hist = st.tabs(
-    [
-        "🛒 Registrar Movimiento",
-        "📸 Leer Libreta (Foto)",
-        "📊 Dashboard y Fechas",
-        "📦 Inventario Completo",
-        "📜 Historial de Movimientos",
-    ]
-)
+if is_admin:
+    tab_reg, tab_ocr, tab_dash, tab_inv, tab_hist = st.tabs(
+        [
+            "🛒 Registrar Movimiento",
+            "📸 Leer Libreta (Foto)",
+            "📊 Dashboard y Fechas",
+            "📦 Inventario Completo",
+            "📜 Historial de Movimientos",
+        ]
+    )
+else:
+    (tab_reg,) = st.tabs(["🛒 Registrar Venta"])
 
 # ------------------------------------------------------------------------------
-# TAB 1: REGISTRAR MOVIMIENTO (Calendario + Buscador + Precio Editable + Carrito)
+# TAB 1: REGISTRAR MOVIMIENTO (Admin: Todo | Empleado: Solo Ventas)
 # ------------------------------------------------------------------------------
 with tab_reg:
-    st.subheader("Registrar Venta, Compra o Ajuste")
+    st.subheader("Registrar Venta" if not is_admin else "Registrar Venta, Compra o Ajuste")
 
     if "cart" not in st.session_state:
         st.session_state["cart"] = []
@@ -952,18 +1014,22 @@ with tab_reg:
         c1, c2 = st.columns(2)
         with c1:
             fecha_mov = st.date_input(
-                "📅 Fecha del movimiento",
+                "📅 Fecha",
                 value=datetime.date.today(),
                 format="DD/MM/YYYY",
                 key="reg_fecha",
             )
         with c2:
-            tipo_label = st.selectbox(
-                "🔄 Tipo de Movimiento",
-                ["SALIDA (Venta)", "ENTRADA (Compra a proveedor)", "AJUSTE (Conteo físico / Merma)"],
-                key="reg_tipo",
-            )
-            tipo_code = tipo_label.split(" ")[0]
+            if is_admin:
+                tipo_label = st.selectbox(
+                    "🔄 Tipo de Movimiento",
+                    ["SALIDA (Venta)", "ENTRADA (Compra a proveedor)", "AJUSTE (Conteo físico / Merma)"],
+                    key="reg_tipo",
+                )
+                tipo_code = tipo_label.split(" ")[0]
+            else:
+                st.selectbox("🔄 Tipo de Movimiento", ["SALIDA (Venta)"], disabled=True, key="reg_tipo_emp")
+                tipo_code = "SALIDA"
 
         productos_lista = sorted(df_inv["Producto"].tolist())
         producto_sel = st.selectbox(
@@ -977,10 +1043,12 @@ with tab_reg:
         precio_alt = prod_row["Precio Alt."]
         has_alt = precio_alt is not None and not pd.isna(precio_alt) and int(precio_alt) > 0
 
-        # Selector rápido de tarifa (Normal vs Fracción/Mayor vs Costo) + valor unitario editable
-        tarifa_opts = ["Precio Venta Normal (PVF)", "Costo c/IVA"]
+        # Selector rápido de tarifa (Empleado nunca ve Costo c/IVA ni puede editar el precio)
+        tarifa_opts = ["Precio Venta Normal (PVF)"]
         if has_alt:
-            tarifa_opts.insert(1, f"Precio Fracción / Mayor (${int(precio_alt):,})")
+            tarifa_opts.append(f"Precio Fracción / Mayor (${int(precio_alt):,})")
+        if is_admin:
+            tarifa_opts.append("Costo c/IVA")
         default_tarifa_idx = 0 if tipo_code == "SALIDA" else len(tarifa_opts) - 1
 
         c3, c4, c5 = st.columns([1, 1.3, 1])
@@ -991,7 +1059,7 @@ with tab_reg:
         with c5:
             if "Fracción" in tarifa_sel and has_alt:
                 precio_sugerido = int(precio_alt)
-            elif "Costo" in tarifa_sel:
+            elif "Costo" in tarifa_sel and is_admin:
                 precio_sugerido = int(prod_row["Costo c/IVA"])
             else:
                 precio_sugerido = int(prod_row["PVF"])
@@ -1000,13 +1068,13 @@ with tab_reg:
                 min_value=0,
                 step=100,
                 value=precio_sugerido,
+                disabled=not is_admin,
                 key=f"reg_vunit_{producto_sel}_{tarifa_sel}",
             )
 
         c6, c7 = st.columns(2)
         with c6:
-            medio_pago = st.selectbox(
-                "💳 Medio de Pago / Documento",
+            pagos_disponibles = (
                 [
                     "Efectivo",
                     "Nequi / Daviplata",
@@ -1015,14 +1083,20 @@ with tab_reg:
                     "Factura Proveedor",
                     "Crédito Cliente",
                     "Ajuste Interno",
-                ],
-                index=6 if tipo_code == "AJUSTE" else 0,
+                ]
+                if is_admin
+                else ["Efectivo", "Nequi / Daviplata", "Transferencia Bancaria", "Tarjeta / Datáfono"]
+            )
+            medio_pago = st.selectbox(
+                "💳 Medio de Pago",
+                pagos_disponibles,
+                index=6 if (is_admin and tipo_code == "AJUSTE") else 0,
                 key="reg_pago",
             )
         with c7:
             cliente_prov = st.text_input(
-                "👤 Cliente / Proveedor / Motivo",
-                placeholder="Ej. Venta mostrador, Jhony Lopez...",
+                "👤 Cliente" if not is_admin else "👤 Cliente / Proveedor / Motivo",
+                placeholder="Ej. Venta mostrador, nombre cliente...",
                 key="reg_cli",
             )
 
@@ -1062,7 +1136,10 @@ with tab_reg:
 
         m3, m4 = st.columns(2)
         m3.metric("Precio Venta (PVF)", f"${prod_row['PVF']:,}")
-        m4.metric("Costo c/IVA", f"${prod_row['Costo c/IVA']:,}")
+        if is_admin:
+            m4.metric("Costo c/IVA", f"${prod_row['Costo c/IVA']:,}")
+        else:
+            m4.metric("Estado Stock", prod_row["Estado"])
 
         extra_alt = f"  \n**Precio Fracción / Mayor:** ${int(precio_alt):,}" if has_alt else ""
         st.info(
@@ -1083,6 +1160,8 @@ with tab_reg:
         if tipo_code == "AJUSTE" and not cli_out:
             cli_out = motivo_ajuste
         obs_out = obs_mov.strip()
+        if not is_admin and st.session_state.get("user_name"):
+            obs_out = f"[Vendedor: {st.session_state['user_name']}] {obs_out}".strip()
         if tipo_code == "AJUSTE" and motivo_ajuste and motivo_ajuste not in obs_out and cli_out != motivo_ajuste:
             obs_out = f"{motivo_ajuste} | {obs_out}".strip(" |")
         if precio_unitario != (prod_row["PVF"] if tipo_code == "SALIDA" else prod_row["Costo c/IVA"]):
@@ -1169,6 +1248,9 @@ with tab_reg:
             if st.button("🗑️ Vaciar Carrito", width="stretch"):
                 st.session_state["cart"] = []
                 st.rerun()
+
+if not is_admin:
+    st.stop()
 
 # ------------------------------------------------------------------------------
 # TAB 2: DASHBOARD Y CONSULTA POR RANGO DE FECHAS
