@@ -1243,6 +1243,90 @@ with tab_dash:
 # ------------------------------------------------------------------------------
 with tab_inv:
     st.subheader("Catálogo e Inventario Actual (138+ productos)")
+
+    # Bloque optimizado para celular: botones grandes sin tener que editar tablas anchas
+    with st.container(border=True):
+        st.markdown("#### 📱 Cambio Rápido de Stock (Modo Celular)")
+        st.caption("Ideal desde el celular: busca el producto, ajusta el número con **- / +** y guarda en un toque.")
+        m_prod = st.selectbox(
+            "🔍 Producto",
+            sorted(df_inv["Producto"].tolist()),
+            key="mob_stock_prod",
+        )
+        m_row = df_inv[df_inv["Producto"] == m_prod].iloc[0]
+
+        mc1, mc2, mc3 = st.columns(3)
+        mc1.metric("Stock Actual", f"{int(m_row['Stock Actual'])} und", m_row["Estado"])
+        mc2.metric("Stock Inicial", f"{int(m_row['Stock Inicial'])} und")
+        mc3.metric("Stock Mínimo", f"{int(m_row['Stock Mín.'])} und")
+
+        m_modo = st.radio(
+            "¿Qué quieres ajustar?",
+            ["🎯 Stock Actual (Conteo físico)", "📦 Stock Inicial directamente"],
+            horizontal=True,
+            key="mob_stock_modo",
+        )
+
+        val_def = int(m_row["Stock Actual"]) if "Actual" in m_modo else int(m_row["Stock Inicial"])
+        nuevo_val = st.number_input(
+            "Nueva cantidad",
+            min_value=0,
+            step=1,
+            value=val_def,
+            key=f"mob_val_{m_prod}_{m_modo}",
+        )
+
+        if st.button("✅ Guardar Nuevo Stock", type="primary", width="stretch", key="mob_btn_save"):
+            try:
+                if "Actual" in m_modo:
+                    # Calcular el Stock Inicial necesario para que Stock Actual quede exactamente en nuevo_val
+                    # (o si prefieres ajuste, aquí mantiene Entradas/Salidas intactas ajustando Stock Inicial)
+                    diff = int(nuevo_val) - int(m_row["Stock Actual"])
+                    new_s_ini = max(0, int(m_row["Stock Inicial"]) + diff)
+                    if int(m_row["Stock Inicial"]) + diff < 0:
+                        # Si quedaría negativo el inicial, registramos un AJUSTE en MOVIMIENTOS
+                        save_movement(
+                            datetime.date.today(),
+                            "AJUSTE",
+                            m_prod,
+                            diff,
+                            "Conteo físico celular",
+                            "Ajuste Interno",
+                            f"Ajuste de {int(m_row['Stock Actual'])} a {int(nuevo_val)}",
+                        )
+                    else:
+                        update_inventory_bulk([
+                            {
+                                "fila_excel": m_row["fila_excel"],
+                                "stock_ini": new_s_ini,
+                                "stock_min": int(m_row["Stock Mín."]),
+                                "costo_base": int(m_row["Costo Base"]),
+                                "pvf": int(m_row["PVF"]),
+                                "obs": str(m_row["Observaciones"] or ""),
+                            }
+                        ])
+                    st.session_state["popup_msg"] = f"Stock Actual de **{m_prod}** actualizado a **{int(nuevo_val)} und**."
+                else:
+                    update_inventory_bulk([
+                        {
+                            "fila_excel": m_row["fila_excel"],
+                            "stock_ini": int(nuevo_val),
+                            "stock_min": int(m_row["Stock Mín."]),
+                            "costo_base": int(m_row["Costo Base"]),
+                            "pvf": int(m_row["PVF"]),
+                            "obs": str(m_row["Observaciones"] or ""),
+                        }
+                    ])
+                    st.session_state["popup_msg"] = f"Stock Inicial de **{m_prod}** actualizado a **{int(nuevo_val)} und**."
+                st.session_state.pop("hist_work", None)
+                st.session_state["hist_ver"] = st.session_state.get("hist_ver", 0) + 1
+                st.rerun()
+            except PermissionError:
+                st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder guardar el cambio.")
+            except Exception as e:
+                st.error(f"❌ Error al actualizar stock: {e}")
+
+    st.divider()
     ci1, ci2, ci3 = st.columns([2, 1.5, 1])
     with ci1:
         buscar_txt = st.text_input("🔍 Buscar por nombre o SKU", placeholder="Ej. habanero, mango, BO01001...")
