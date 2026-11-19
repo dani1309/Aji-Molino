@@ -1596,9 +1596,9 @@ def render_historial_interactivo(df_inv_local, df_mov_local):
         st.session_state["hist_ver"] += 1
         st.rerun(scope="fragment" if hasattr(st, "fragment") else "app")
 
-    col_b1, col_b2 = st.columns([3, 1])
+    col_b1, col_b2, col_b3 = st.columns([2.2, 1.3, 1.3])
     with col_b1:
-        if st.button("💾 Guardar Cambios de la Tabla en Excel", type="primary", width="stretch"):
+        if st.button("💾 Guardar Cambios de la Tabla", type="primary", width="stretch"):
             try:
                 save_movements_table(edited_df)
                 st.session_state.pop("hist_work", None)
@@ -1613,61 +1613,61 @@ def render_historial_interactivo(df_inv_local, df_mov_local):
             except Exception as e:
                 st.error(f"❌ Error al guardar cambios: {e}")
     with col_b2:
-        if st.button("🔄 Descartar / Recargar", width="stretch"):
+        if st.button("🔄 Recargar", width="stretch"):
             _clear_all_caches()
             st.session_state.pop("hist_work", None)
             st.session_state["hist_ver"] += 1
             st.rerun()
+    with col_b3:
+        if st.button(
+            "🗑️ Descartar Movimientos...",
+            width="stretch",
+            disabled=df_mov_local.empty,
+        ):
+            mostrar_popup_descartar_movimientos(df_mov_local)
 
-    if not df_mov_local.empty:
-        st.divider()
-        with st.expander("🗑️ Eliminar Movimientos (o Vaciar Historial de Pruebas)"):
-            st.caption("Ideal desde el celular o PC: selecciona uno o varios movimientos y bórralos en un clic.")
-            opciones_del = {
-                i: f"{r['ID Lote']} | {r['Fecha'] or 'Sin fecha'} | {r['Tipo']} | {r['Cantidad']} x {r['Producto']}"
-                for i, r in df_mov_local.iterrows()
-            }
-            sel_indices = st.multiselect(
-                "Selecciona los movimientos a eliminar",
-                options=list(opciones_del.keys()),
-                format_func=lambda idx_k: opciones_del[idx_k],
-                key="hist_del_multi",
-            )
-            cd1, cd2 = st.columns(2)
-            with cd1:
-                if st.button("🗑️ Eliminar Seleccionados", width="stretch", disabled=(len(sel_indices) == 0)):
-                    try:
-                        df_restante = df_mov_local.drop(index=sel_indices).drop(columns=["fila_excel"])
-                        save_movements_table(df_restante)
-                        st.session_state.pop("hist_work", None)
-                        st.session_state["hist_ver"] += 1
-                        st.session_state["popup_msg"] = f"Se eliminaron **{len(sel_indices)} movimiento(s)** correctamente."
-                        st.rerun()
-                    except PermissionError:
-                        st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder eliminar.")
-                    except Exception as e:
-                        st.error(f"❌ Error al eliminar: {e}")
-            with cd2:
-                confirm_wipe = st.checkbox("Confirmo vaciar TODO el historial", key="hist_confirm_wipe")
-                if st.button("🧹 Vaciar TODOS los Movimientos", width="stretch", disabled=not confirm_wipe):
-                    try:
-                        save_movements_table(pd.DataFrame(columns=df_edit_base.columns))
-                        st.session_state.pop("hist_work", None)
-                        st.session_state["hist_ver"] += 1
-                        st.session_state["popup_msg"] = "¡Historial vaciado por completo! Todos los stocks volvieron a su Stock Inicial."
-                        st.rerun()
-                    except PermissionError:
-                        st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder vaciar el historial.")
-                    except Exception as e:
-                        st.error(f"❌ Error al vaciar historial: {e}")
+
+@st.dialog("🗑️ Seleccionar movimientos a descartar")
+def mostrar_popup_descartar_movimientos(df_mov_local):
+    st.caption("Marca la casilla de los movimientos que quieres eliminar y presiona **Confirmar Eliminación**.")
+    sel_all = st.checkbox("Seleccionar todos", key="pop_del_all")
+
+    indices_a_borrar = []
+    for i, r in df_mov_local.iterrows():
+        lbl = f"**{r['ID Lote']}** · {r['Fecha'] or 'Sin fecha'} · `{r['Tipo']}` · **{r['Cantidad']} x {r['Producto']}** (${int(r['Total']):,})"
+        if st.checkbox(lbl, value=sel_all, key=f"pop_chk_{i}_{sel_all}"):
+            indices_a_borrar.append(i)
+
+    st.divider()
+    b_conf, b_canc = st.columns(2)
+    with b_conf:
+        if st.button(
+            f"🗑️ Eliminar ({len(indices_a_borrar)})",
+            type="primary",
+            width="stretch",
+            disabled=(len(indices_a_borrar) == 0),
+        ):
+            try:
+                df_restante = df_mov_local.drop(index=indices_a_borrar).drop(columns=["fila_excel"])
+                save_movements_table(df_restante)
+                st.session_state.pop("hist_work", None)
+                st.session_state["hist_ver"] = st.session_state.get("hist_ver", 0) + 1
+                st.session_state["popup_msg"] = f"Se eliminaron **{len(indices_a_borrar)} movimiento(s)** correctamente."
+                st.rerun()
+            except PermissionError:
+                st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder eliminar.")
+            except Exception as e:
+                st.error(f"❌ Error al eliminar: {e}")
+    with b_canc:
+        if st.button("Cancelar", width="stretch"):
+            st.rerun()
 
 
 with tab_hist:
     st.subheader("Historial Interactivo de Entradas, Salidas y Ajustes")
     st.caption(
         "Haz doble clic en cualquier celda para editar **Fecha (calendario)**, **Tipo**, **Producto**, **Cantidad**, "
-        "**Cliente/Proveedor**, **Medio de Pago** u **Observaciones**. También puedes **agregar filas abajo** o **seleccionar y borrar** filas. "
-        "Al terminar, presiona **Guardar Cambios en Excel**."
+        "**Cliente/Proveedor**, **Medio de Pago** u **Observaciones**. También puedes **agregar filas abajo** o **descartar movimientos con casillas**."
     )
     render_historial_interactivo(df_inv, df_mov)
 
