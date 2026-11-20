@@ -1,5 +1,6 @@
 import base64
 import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -915,10 +916,28 @@ def get_admin_pin():
     return os.environ.get("ADMIN_PIN", "1309").strip()
 
 
+def _admin_token():
+    pin = get_admin_pin()
+    return hashlib.sha256(f"aji-molino-{pin}".encode("utf-8")).hexdigest()[:12]
+
+
 if "user_role" not in st.session_state:
     st.session_state["user_role"] = None
 if "user_name" not in st.session_state:
     st.session_state["user_name"] = ""
+
+# Restaurar sesión automáticamente desde la URL (Recuerdo rápido en celular al recargar o abrir acceso directo)
+try:
+    _qp = st.query_params
+    if st.session_state["user_role"] is None:
+        if _qp.get("auth") == _admin_token():
+            st.session_state["user_role"] = "admin"
+            st.session_state["user_name"] = "Administrador"
+        elif _qp.get("modo") == "vendedor" and str(_qp.get("nombre", "")).strip():
+            st.session_state["user_role"] = "empleado"
+            st.session_state["user_name"] = str(_qp.get("nombre")).strip()
+except Exception:
+    pass
 
 if st.session_state["user_role"] is None:
     st.title("🌶️ Ají y Molino — Acceso al Sistema")
@@ -928,7 +947,7 @@ if st.session_state["user_role"] is None:
     with col_emp:
         with st.container(border=True):
             st.subheader("👤 Modo Empleado / Vendedor")
-            st.caption("Acceso rápido para registrar nuevas ventas y usar el carrito.")
+            st.caption("Acceso rápido para registrar nuevas ventas y consultar precios/stock.")
             emp_name = st.text_input("Tu nombre", placeholder="Ej. Carlos, María...", key="login_emp_name")
             if st.button("Entrar como Vendedor", type="primary", width="stretch", key="btn_login_emp"):
                 if not emp_name.strip():
@@ -936,6 +955,12 @@ if st.session_state["user_role"] is None:
                 else:
                     st.session_state["user_role"] = "empleado"
                     st.session_state["user_name"] = emp_name.strip()
+                    try:
+                        st.query_params.clear()
+                        st.query_params["modo"] = "vendedor"
+                        st.query_params["nombre"] = emp_name.strip()
+                    except Exception:
+                        pass
                     st.rerun()
 
     with col_adm:
@@ -947,6 +972,11 @@ if st.session_state["user_role"] is None:
                 if pin_in.strip() == get_admin_pin():
                     st.session_state["user_role"] = "admin"
                     st.session_state["user_name"] = "Administrador"
+                    try:
+                        st.query_params.clear()
+                        st.query_params["auth"] = _admin_token()
+                    except Exception:
+                        pass
                     st.rerun()
                 else:
                     st.error("❌ PIN incorrecto.")
@@ -969,6 +999,10 @@ with hdr_r:
         st.session_state["user_role"] = None
         st.session_state["user_name"] = ""
         st.session_state["cart"] = []
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
         st.rerun()
 
 df_inv, df_mov = load_data()
