@@ -904,6 +904,76 @@ def parse_notebook_image_with_gemini(image_bytes: bytes, mime_type: str, catalog
     return data
 
 
+def parse_voice_order_with_gemini(audio_bytes: bytes, mime_type: str, df_inv_local: pd.DataFrame, allow_all_types: bool):
+    """Escucha un audio dictado por voz y extrae los productos/cantidades usando Gemini."""
+    from google import genai
+
+    api_key = get_gemini_api_key()
+    if not api_key:
+        raise ValueError("Falta configurar la API Key de Gemini.")
+
+    client = genai.Client(api_key=api_key)
+    b64_audio = base64.b64encode(audio_bytes).decode("ascii")
+    catalog_lines = [
+        f"- {row['Producto']} (PVF: ${int(row['PVF']):,})"
+        for _, row in df_inv_local.sort_values("Producto").iterrows()
+    ]
+    catalog_txt = "\n".join(catalog_lines)
+
+    tipos_regla = (
+        "'tipo' puede ser 'SALIDA' (venta), 'ENTRADA' (compra a proveedor) o 'AJUSTE' (usa cantidad negativa si dice dañado/vencido/merma)."
+        if allow_all_types
+        else "'tipo' DEBE ser SIEMPRE 'SALIDA' (solo ventas permitidas)."
+    )
+
+    prompt = (
+        "Eres un asistente de caja rápida para el negocio 'Ají y Molino'. "
+        "Escucha este audio de voz en español donde dictan una venta o movimiento de inventario.\n"
+        "Devuelve ÚNICAMENTE un objeto JSON válido (sin texto extra) con esta estructura exacta:\n"
+        '{"transcripcion": "texto exacto escuchado", "items": ['
+        '{"tipo": "SALIDA", "producto": "NOMBRE EXACTO DEL CATÁLOGO", "cantidad": 1, '
+        '"medio_pago": "Efectivo", "cliente": "", "nota": ""}]}\n\n'
+        "Reglas:\n"
+        f"1. {tipos_regla}\n"
+        "2. 'producto' DEBE ser exactamente uno de los nombres del catálogo (sin incluir el '(PVF: ...)'). Elige el más parecido:\n"
+        f"{catalog_txt}\n"
+        "3. Si un producto dictado no existe en el catálogo, deja 'producto' como \"\" y pon lo dicho en 'nota'.\n"
+        "4. 'medio_pago' debe ser uno de: 'Efectivo', 'Nequi / Daviplata', 'Transferencia Bancaria', "
+        "'Tarjeta / Datáfono', 'Crédito Cliente', 'Factura Proveedor', 'Ajuste Interno'. Si no se menciona, usa 'Efectivo'.\n"
+        "5. 'cantidad' debe ser un entero (por defecto 1). Si es AJUSTE de producto dañado/vencido, usa entero negativo (ej. -2).\n"
+        "6. Responde SOLO con el JSON."
+    )
+
+    last_err = None
+    raw_text = ""
+    for model_name in ("gemini-3.8-flash", "gemini-3.5-flash-lite"):
+        try:
+            res = client.interactions.create(
+                model=model_name,
+                input=[
+                    {"type": "text", "text": prompt},
+                    {"type": "audio", "data": b64_audio, "mime_type": mime_type},
+                ],
+            )
+            raw_text = (res.output_text or "").strip()
+            break
+        except Exception as e:
+            last_err = e
+            continue
+
+    if not raw_text and last_err:
+        raise last_err
+
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_text, flags=re.IGNORECASE | re.DOTALL).strip()
+    match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+    if match:
+        cleaned = match.group(0)
+    data = json.loads(cleaned)
+    if not isinstance(data, dict) or "items" not in data:
+        raise ValueError("La respuesta de Gemini no tiene el formato JSON esperado.")
+    return data
+
+
 # ==============================================================================
 # CONTROL DE ACCESO (EMPLEADO VS ADMINISTRADOR)
 # ==============================================================================
@@ -1042,6 +1112,66 @@ with tab_reg:
 
     if "cart" not in st.session_state:
         st.session_state["cart"] = []
+
+    # 🎤 Dictado rápido por voz con Gemini -> carga directo al Carrito para confirmar y guardar
+    with st.expander("🎤 Dictar por Voz (habla y se agrega al Carrito)", expanded=False):
+        st.caption(
+            "Toca el micrófono y di por ejemplo: *'Vendí dos aceites de coco y tres pulparindos por Nequi'*."
+        )
+        audio_val = st.audio_input("Grabar nota de voz", key="reg_voice_audio")
+        if audio_val is not None:
+            if st.button("🤖 Entender Audio y Cargar al Carrito", type="primary", width="stretch", key="btn_parse_voice"):
+                with st.spinner("Escuchando y buscando tus productos..."):
+                    try:
+                        audio_bytes = audio_val.getvalue()
+                        mime_a = getattr(audio_val, "type", None) or "audio/wav"
+                        res_v = parse_voice_order_with_gemini(audio_bytes, mime_a, df_inv, allow_all_types=is_admin)
+                        transc = str(res_v.get("transcripcion") or "").strip()
+                        if transc:
+                            st.info(f"🗣️ **Escuché:** *\"{transc}\"*")
+                        prod_map_v = df_inv.set_index("Producto").to_dict(orient="index")
+                        added_n = 0
+                        no_match = []
+                        for it in res_v.get("items", []):
+                            p_n = str(it.get("producto") or "").strip()
+                            if not p_n or p_n not in prod_map_v:
+                                no_match.append(str(it.get("nota") or p_n or "ítem no reconocido"))
+                                continue
+                            t_c = str(it.get("tipo") or "SALIDA").strip().upper()
+                            if not is_admin or t_c not in ("SALIDA", "ENTRADA", "AJUSTE"):
+                                t_c = "SALIDA"
+                            q_i = int(round(to_float(it.get("cantidad"), 1)))
+                            if q_i == 0:
+                                q_i = 1
+                            if t_c != "AJUSTE":
+                                q_i = abs(q_i)
+                            info_v = prod_map_v[p_n]
+                            v_u = int(info_v["PVF"] if t_c == "SALIDA" else info_v["Costo c/IVA"])
+                            pago_v = str(it.get("medio_pago") or "Efectivo").strip()
+                            cli_v = str(it.get("cliente") or "").strip()
+                            obs_v = str(it.get("nota") or "").strip()
+                            prefix_v = f"[Vendedor: {st.session_state['user_name']}] [Voz]" if (not is_admin and st.session_state.get("user_name")) else "[Voz]"
+                            obs_final_v = f"{prefix_v} {obs_v}".strip()
+                            st.session_state["cart"].append(
+                                {
+                                    "fecha": datetime.date.today(),
+                                    "tipo": t_c,
+                                    "producto": p_n,
+                                    "cantidad": q_i,
+                                    "valor_unit": v_u,
+                                    "total": abs(q_i) * v_u,
+                                    "cliente": cli_v,
+                                    "pago": pago_v,
+                                    "obs": obs_final_v,
+                                }
+                            )
+                            added_n += 1
+                        if added_n > 0:
+                            st.success(f"✅ Se agregaron **{added_n} producto(s)** al Carrito (revisa abajo y presiona **Guardar Todo el Carrito**).")
+                        if no_match:
+                            st.warning("⚠️ No se encontró coincidencia exacta para: " + ", ".join(no_match))
+                    except Exception as e:
+                        st.error(f"❌ No se pudo procesar el audio: {e}")
 
     col_form, col_info = st.columns([1.3, 1], gap="large")
 
