@@ -852,63 +852,6 @@ def get_gemini_api_key():
     return os.environ.get("GEMINI_API_KEY", "").strip()
 
 
-def parse_notebook_image_with_gemini(image_bytes: bytes, mime_type: str, catalog_names: list[str], default_tipo: str):
-    """Envía la foto de la libreta a Gemini y devuelve una lista estructurada de movimientos."""
-    from google import genai
-
-    api_key = get_gemini_api_key()
-    if not api_key:
-        raise ValueError("Falta configurar la API Key en gemini_config.json.")
-
-    client = genai.Client(api_key=api_key)
-    b64_img = base64.b64encode(image_bytes).decode("ascii")
-    catalog_txt = "\n".join(f"- {name}" for name in catalog_names)
-
-    prompt = (
-        "Eres un asistente experto en inventario para el negocio 'Ají y Molino'. "
-        "Lee cuidadosamente esta foto de una libreta escrita a mano con ventas/compras del día.\n"
-        "Para cada línea que identifiques, devuelve un arreglo JSON válido (sin texto adicional) con objetos de esta forma:\n"
-        '[{"texto_libreta": "lo que dice la libreta", "tipo": "SALIDA", "producto": "NOMBRE EXACTO DEL CATÁLOGO", "cantidad": 1, "nota": ""}]\n\n'
-        "Reglas:\n"
-        f"1. 'tipo' debe ser 'SALIDA' (venta), 'ENTRADA' (compra a proveedor) o 'AJUSTE'. Si no se especifica, usa '{default_tipo}'.\n"
-        "2. 'producto' DEBE ser exactamente uno de los nombres de este catálogo (elige el más parecido):\n"
-        f"{catalog_txt}\n"
-        "3. Si no encuentras coincidencia clara en el catálogo, deja 'producto' como cadena vacía \"\".\n"
-        "4. 'cantidad' debe ser un número entero positivo (por defecto 1 si no se ve cantidad).\n"
-        "5. Responde ÚNICAMENTE con el JSON."
-    )
-
-    last_err = None
-    raw_text = ""
-    for model_name in ("gemini-3.5-flash-lite", "gemini-3.8-flash"):
-        try:
-            res = client.interactions.create(
-                model=model_name,
-                input=[
-                    {"type": "text", "text": prompt},
-                    {"type": "image", "data": b64_img, "mime_type": mime_type},
-                ],
-            )
-            raw_text = (res.output_text or "").strip()
-            break
-        except Exception as e:
-            last_err = e
-            continue
-
-    if not raw_text and last_err:
-        raise last_err
-
-    # Limpiar posibles bloques ```json ... ```
-    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_text, flags=re.IGNORECASE | re.DOTALL).strip()
-    match = re.search(r"\[.*\]", cleaned, flags=re.DOTALL)
-    if match:
-        cleaned = match.group(0)
-    data = json.loads(cleaned)
-    if not isinstance(data, list):
-        raise ValueError("La respuesta de Gemini no es una lista JSON válida.")
-    return data
-
-
 def parse_voice_order_with_gemini(audio_bytes: bytes, mime_type: str, df_inv_local: pd.DataFrame, allow_all_types: bool):
     """Escucha un audio dictado por voz y extrae los productos/cantidades usando Gemini."""
     from google import genai
@@ -1096,10 +1039,9 @@ if "popup_msg" in st.session_state:
     mostrar_popup_guardado(_msg)
 
 if is_admin:
-    tab_reg, tab_ocr, tab_dash, tab_inv, tab_hist = st.tabs(
+    tab_reg, tab_dash, tab_inv, tab_hist = st.tabs(
         [
             "🛒 Registrar Movimiento",
-            "📸 Leer Libreta (Foto)",
             "📊 Dashboard y Fechas",
             "📦 Inventario Completo",
             "📜 Historial de Movimientos",
@@ -1107,7 +1049,7 @@ if is_admin:
     )
 else:
     tab_reg, tab_inv = st.tabs(["🛒 Registrar Venta", "📦 Consultar Inventario"])
-    tab_ocr = tab_dash = tab_hist = None
+    tab_dash = tab_hist = None
 
 # ------------------------------------------------------------------------------
 # TAB 1: REGISTRAR MOVIMIENTO (Admin: Todo | Empleado: Solo Ventas)
@@ -2073,157 +2015,3 @@ with tab_hist:
     render_historial_interactivo(df_inv, df_mov)
 
 
-# ------------------------------------------------------------------------------
-# TAB 5: 📸 LEER LIBRETA CON GEMINI (FOTO -> EXCEL)
-# ------------------------------------------------------------------------------
-with tab_ocr:
-    st.subheader("📸 Pasar Libreta de Tu Papá a Excel Automáticamente")
-    st.caption(
-        "Sube la foto de la libreta del día. La IA lee la letra a mano, la empareja con tus 138 productos "
-        "y te muestra una tabla para confirmar antes de guardar."
-    )
-
-    o1, o2, o3 = st.columns(3)
-    with o1:
-        ocr_fecha = st.date_input("📅 Fecha de la libreta", value=datetime.date.today(), format="DD/MM/YYYY", key="ocr_fecha")
-    with o2:
-        ocr_tipo_def = st.selectbox("🔄 Tipo por defecto", ["SALIDA", "ENTRADA"], key="ocr_tipo_def")
-    with o3:
-        ocr_pago_def = st.selectbox(
-            "💳 Medio de pago por defecto",
-            ["Efectivo", "Nequi / Daviplata", "Transferencia Bancaria", "Tarjeta / Datáfono", "Factura Proveedor"],
-            key="ocr_pago_def",
-        )
-
-    modo_img = st.radio(
-        "¿Cómo quieres cargar la foto?",
-        ["📤 Subir foto de la galería", "📷 Tomar foto con la cámara del celular/PC"],
-        horizontal=True,
-        key="ocr_modo_img",
-    )
-    if "Subir" in modo_img:
-        img_file = st.file_uploader("📤 Sube la foto de la libreta (JPG, PNG, WEBP)", type=["jpg", "jpeg", "png", "webp"], key="ocr_file")
-    else:
-        img_file = st.camera_input("📷 Toma la foto de la libreta", key="ocr_cam")
-
-    if img_file is not None:
-        col_img, col_act = st.columns([1, 1.5], gap="large")
-        with col_img:
-            st.image(img_file, caption="Foto cargada de la libreta", width="stretch")
-        with col_act:
-            if st.button("🤖 Leer Libreta con IA (Gemini)", type="primary", width="stretch"):
-                with st.spinner("Leyendo letra a mano y buscando productos en tu catálogo..."):
-                    try:
-                        img_bytes = img_file.getvalue()
-                        mime_t = img_file.type or "image/jpeg"
-                        parsed = parse_notebook_image_with_gemini(
-                            img_bytes, mime_t, sorted(df_inv["Producto"].tolist()), ocr_tipo_def
-                        )
-                        prod_map_ocr = df_inv.set_index("Producto").to_dict(orient="index")
-                        rows_ocr = []
-                        for item in parsed:
-                            p_name = str(item.get("producto") or "").strip()
-                            t_code = str(item.get("tipo") or ocr_tipo_def).strip().upper()
-                            if t_code not in ("SALIDA", "ENTRADA", "AJUSTE"):
-                                t_code = ocr_tipo_def
-                            qty_i = max(1, int(round(to_float(item.get("cantidad"), 1))))
-                            info_o = prod_map_ocr.get(p_name, {})
-                            v_u = int(info_o.get("PVF", 0) if t_code == "SALIDA" else info_o.get("Costo c/IVA", 0))
-                            rows_ocr.append(
-                                {
-                                    "Texto Libreta": str(item.get("texto_libreta") or ""),
-                                    "Tipo": t_code,
-                                    "Producto": p_name if p_name in prod_map_ocr else None,
-                                    "Cantidad": qty_i,
-                                    "Valor Unit.": v_u,
-                                    "Total": qty_i * v_u,
-                                    "Medio de Pago": ocr_pago_def,
-                                    "Nota / Cliente": str(item.get("nota") or ""),
-                                }
-                            )
-                        st.session_state["ocr_rows"] = pd.DataFrame(rows_ocr)
-                        st.session_state["ocr_ver"] = st.session_state.get("ocr_ver", 0) + 1
-                        st.success(f"✅ Se detectaron **{len(rows_ocr)}** líneas en la libreta. Revísalas abajo antes de guardar.")
-                    except Exception as e:
-                        st.error(f"❌ No se pudo leer la foto: {e}")
-
-    if "ocr_rows" in st.session_state and not st.session_state["ocr_rows"].empty:
-        st.divider()
-        st.markdown("### ✏️ Revisa y confirma antes de guardar en Excel")
-        productos_opts_ocr = sorted(df_inv["Producto"].tolist())
-        pagos_opts_ocr = [
-            "Efectivo", "Nequi / Daviplata", "Transferencia Bancaria",
-            "Tarjeta / Datáfono", "Factura Proveedor", "Crédito Cliente", "Ajuste Interno",
-        ]
-
-        edited_ocr = st.data_editor(
-            st.session_state["ocr_rows"],
-            width="stretch",
-            hide_index=True,
-            num_rows="dynamic",
-            disabled=["Texto Libreta", "Valor Unit.", "Total"],
-            column_config={
-                "Texto Libreta": st.column_config.TextColumn("Lo que decía la libreta", width="medium"),
-                "Tipo": st.column_config.SelectboxColumn("Tipo", options=["SALIDA", "ENTRADA", "AJUSTE"], width="small"),
-                "Producto": st.column_config.SelectboxColumn("Producto en Catálogo", options=productos_opts_ocr, width="large"),
-                "Cantidad": st.column_config.NumberColumn("Cantidad", step=1, width="small"),
-                "Valor Unit.": st.column_config.NumberColumn("Valor Unit.", format="$%d", width="small"),
-                "Total": st.column_config.NumberColumn("Total", format="$%d", width="small"),
-                "Medio de Pago": st.column_config.SelectboxColumn("Medio de Pago", options=pagos_opts_ocr, width="medium"),
-                "Nota / Cliente": st.column_config.TextColumn("Nota / Cliente", width="medium"),
-            },
-            key=f"ocr_editor_{st.session_state.get('ocr_ver', 0)}",
-        )
-
-        # Recalcular en vivo si el usuario cambia Producto, Tipo o Cantidad en la tabla de revisión
-        prod_map_ocr = df_inv.set_index("Producto").to_dict(orient="index")
-        need_ocr_refresh = False
-        recalc_ocr = edited_ocr.copy()
-        for ir, rr in recalc_ocr.iterrows():
-            pn = "" if pd.isna(rr.get("Producto")) else str(rr.get("Producto") or "").strip()
-            tv = "" if pd.isna(rr.get("Tipo")) else str(rr.get("Tipo") or ocr_tipo_def).strip().upper()
-            qv = max(1, int(round(to_float(rr.get("Cantidad"), 1))))
-            info_o = prod_map_ocr.get(pn, {})
-            exp_vu = int(info_o.get("PVF", 0) if tv == "SALIDA" else info_o.get("Costo c/IVA", 0))
-            exp_tt = qv * exp_vu
-            if int(round(to_float(rr.get("Valor Unit."), 0))) != exp_vu or int(round(to_float(rr.get("Total"), 0))) != exp_tt:
-                recalc_ocr.at[ir, "Valor Unit."] = exp_vu
-                recalc_ocr.at[ir, "Total"] = exp_tt
-                need_ocr_refresh = True
-        if need_ocr_refresh:
-            st.session_state["ocr_rows"] = recalc_ocr
-            st.session_state["ocr_ver"] = st.session_state.get("ocr_ver", 0) + 1
-            st.rerun()
-
-        valid_ocr = edited_ocr[edited_ocr["Producto"].notna() & (edited_ocr["Producto"].astype(str).str.strip() != "")]
-        st.markdown(f"#### 💰 Total detectado: **${int(valid_ocr['Total'].sum()):,} COP** ({len(valid_ocr)} líneas válidas)")
-
-        if st.button("💾 Guardar Todo el Día en Excel", type="primary", width="stretch"):
-            if valid_ocr.empty:
-                st.warning("⚠️ No hay filas con producto seleccionado para guardar.")
-            else:
-                try:
-                    items_to_save = []
-                    for _, rr in valid_ocr.iterrows():
-                        items_to_save.append(
-                            {
-                                "fecha": ocr_fecha,
-                                "tipo": str(rr["Tipo"] or ocr_tipo_def).strip().upper(),
-                                "producto": str(rr["Producto"]).strip(),
-                                "cantidad": int(round(to_float(rr["Cantidad"], 1))),
-                                "cliente": str(rr.get("Nota / Cliente") or "").strip(),
-                                "pago": str(rr.get("Medio de Pago") or ocr_pago_def).strip(),
-                                "obs": f"Libreta: {rr.get('Texto Libreta', '')}".strip(),
-                            }
-                        )
-                    filas = save_cart_movements(items_to_save)
-                    st.session_state.pop("ocr_rows", None)
-                    st.session_state.pop("hist_work", None)
-                    st.session_state["hist_ver"] = st.session_state.get("hist_ver", 0) + 1
-                    destino_txt = "Google Sheets" if is_cloud_mode() else "LISTADO_VENTA.xlsx"
-                    st.session_state["popup_msg"] = f"¡Guardadas {len(filas)} líneas de la libreta en {destino_txt} (filas {filas[0]} a {filas[-1]})!"
-                    st.rerun()
-                except PermissionError:
-                    st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder guardar.")
-                except Exception as e:
-                    st.error(f"❌ Error al guardar: {e}")
