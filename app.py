@@ -1121,8 +1121,43 @@ with tab_reg:
 
         obs_mov = st.text_input("📝 Observaciones (opcional)", key="reg_obs")
 
-    cantidad_real = -int(cantidad) if (tipo_code == "AJUSTE" and "Restar" in ajuste_signo) else int(cantidad)
-    total_mov = abs(int(cantidad_real)) * int(precio_unitario)
+        unidades_x_paq = 1
+        modo_precio_paq = "Unidad suelta"
+        if is_admin and tipo_code == "ENTRADA":
+            m_pack = re.search(r"(?:\*|x\s*|dp\s*\*?\s*|pqte\s*\*?\s*|display\s*x?\s*)(\d+)\b", f"{producto_sel} {prod_row['Presentación']}", re.IGNORECASE)
+            auto_pack = int(m_pack.group(1)) if (m_pack and 2 <= int(m_pack.group(1)) <= 100) else 1
+            pk1, pk2 = st.columns([1, 1.3])
+            with pk1:
+                unidades_x_paq = st.number_input(
+                    "📦 Unidades por paquete (1 = suelto)",
+                    min_value=1,
+                    step=1,
+                    value=auto_pack,
+                    key=f"reg_pack_{producto_sel}",
+                )
+            with pk2:
+                if unidades_x_paq > 1:
+                    modo_precio_paq = st.radio(
+                        "💲 El Valor Unitario es por:",
+                        ["Unidad suelta", "Paquete completo"],
+                        horizontal=True,
+                        key="reg_modo_paq",
+                    )
+
+    if tipo_code == "AJUSTE" and "Restar" in ajuste_signo:
+        cantidad_real = -int(cantidad)
+    elif tipo_code == "ENTRADA":
+        cantidad_real = int(cantidad) * int(unidades_x_paq)
+    else:
+        cantidad_real = int(cantidad)
+
+    if tipo_code == "ENTRADA" and unidades_x_paq > 1 and modo_precio_paq == "Paquete completo":
+        total_mov = int(cantidad) * int(precio_unitario)
+        precio_unit_efectivo = round(precio_unitario / unidades_x_paq)
+    else:
+        total_mov = abs(int(cantidad_real)) * int(precio_unitario)
+        precio_unit_efectivo = int(precio_unitario)
+
     stock_nuevo_est = (
         int(prod_row["Stock Actual"]) + cantidad_real
         if tipo_code in ("ENTRADA", "AJUSTE")
@@ -1163,10 +1198,13 @@ with tab_reg:
         obs_out = obs_mov.strip()
         if not is_admin and st.session_state.get("user_name"):
             obs_out = f"[Vendedor: {st.session_state['user_name']}] {obs_out}".strip()
+        if tipo_code == "ENTRADA" and unidades_x_paq > 1:
+            nota_pk = f"Compra: {cantidad} paq x {unidades_x_paq} und = {cantidad_real} und"
+            obs_out = f"{nota_pk} | {obs_out}".strip(" |")
         if tipo_code == "AJUSTE" and motivo_ajuste and motivo_ajuste not in obs_out and cli_out != motivo_ajuste:
             obs_out = f"{motivo_ajuste} | {obs_out}".strip(" |")
-        if precio_unitario != (prod_row["PVF"] if tipo_code == "SALIDA" else prod_row["Costo c/IVA"]):
-            nota_precio = f"Tarifa aplicada: ${precio_unitario:,}"
+        if precio_unit_efectivo != (prod_row["PVF"] if tipo_code == "SALIDA" else prod_row["Costo c/IVA"]):
+            nota_precio = f"Tarifa aplicada: ${precio_unit_efectivo:,}"
             obs_out = f"{obs_out} | {nota_precio}".strip(" |")
         return cli_out, obs_out
 
@@ -1180,7 +1218,7 @@ with tab_reg:
                     "tipo": tipo_code,
                     "producto": producto_sel,
                     "cantidad": int(cantidad_real),
-                    "valor_unit": int(precio_unitario),
+                    "valor_unit": int(precio_unit_efectivo),
                     "total": int(total_mov),
                     "cliente": cli_out,
                     "pago": medio_pago,
@@ -1491,6 +1529,56 @@ with tab_inv:
                         st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder agregar el producto.")
                     except Exception as e:
                         st.error(f"❌ Error al crear el producto: {e}")
+
+        with st.expander("📦 Convertir un Producto de Paquete/Display a Unidades Sueltas"):
+            st.caption(
+                "Usa esto si un producto lo tenías contado por paquetes (ej. 3 displays x 20 = 60 dulces) "
+                "y quieres pasarlo a unidades sueltas para vender de a 1."
+            )
+            conv_prod = st.selectbox(
+                "Selecciona el producto en paquete",
+                sorted(df_inv["Producto"].tolist()),
+                key="conv_prod",
+            )
+            c_row = df_inv[df_inv["Producto"] == conv_prod].iloc[0]
+            m_pk_c = re.search(r"(?:\*|x\s*|dp\s*\*?\s*|pqte\s*\*?\s*|display\s*x?\s*)(\d+)\b", f"{conv_prod} {c_row['Presentación']}", re.IGNORECASE)
+            def_pk_c = int(m_pk_c.group(1)) if (m_pk_c and 2 <= int(m_pk_c.group(1)) <= 100) else 10
+
+            cv1, cv2, cv3 = st.columns(3)
+            und_x_paq_conv = cv1.number_input("Unidades que trae cada paquete", min_value=2, step=1, value=def_pk_c, key=f"conv_n_{conv_prod}")
+            nuevo_s_ini_conv = int(c_row["Stock Inicial"]) * int(und_x_paq_conv)
+            nuevo_c_base_conv = round(int(c_row["Costo Base"]) / int(und_x_paq_conv))
+            p_alt_c = c_row["Precio Alt."]
+            def_pvf_conv = int(p_alt_c) if (p_alt_c is not None and not pd.isna(p_alt_c) and int(p_alt_c) > 0) else round(int(c_row["PVF"]) / int(und_x_paq_conv))
+
+            nuevo_pvf_conv = cv2.number_input("Nuevo Precio Venta por Unidad (PVF)", min_value=0, step=100, value=def_pvf_conv, key=f"conv_pvf_{conv_prod}")
+            nuevo_smin_conv = cv3.number_input("Nuevo Stock Mínimo (unidades)", min_value=0, step=1, value=int(c_row["Stock Mín."]) * int(und_x_paq_conv), key=f"conv_smin_{conv_prod}")
+
+            st.info(
+                f"**Stock Inicial:** {int(c_row['Stock Inicial'])} paq → **{nuevo_s_ini_conv} und**  \n"
+                f"**Costo Base (sin IVA):** ${int(c_row['Costo Base']):,} / paq → **${nuevo_c_base_conv:,} / und**  \n"
+                f"**Precio Venta (PVF):** ${int(c_row['PVF']):,} → **${int(nuevo_pvf_conv):,} / und**"
+            )
+
+            if st.button("🔄 Convertir Producto a Unidades", type="primary", width="stretch", key="btn_conv_prod"):
+                try:
+                    nota_conv = f"Convertido a unidades (1 paq = {und_x_paq_conv} und)".strip()
+                    update_inventory_bulk([
+                        {
+                            "fila_excel": c_row["fila_excel"],
+                            "stock_ini": nuevo_s_ini_conv,
+                            "stock_min": int(nuevo_smin_conv),
+                            "costo_base": nuevo_c_base_conv,
+                            "pvf": int(nuevo_pvf_conv),
+                            "obs": nota_conv,
+                        }
+                    ])
+                    st.session_state["popup_msg"] = f"**{conv_prod}** convertido a **{nuevo_s_ini_conv} unidades** (${int(nuevo_pvf_conv):,} c/u)."
+                    st.rerun()
+                except PermissionError:
+                    st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder convertir el producto.")
+                except Exception as e:
+                    st.error(f"❌ Error al convertir: {e}")
 
 if not is_admin:
     st.stop()
