@@ -1421,13 +1421,25 @@ with tab_reg:
                 except Exception as e:
                     st.error(f"❌ Error al guardar: {e}")
 
-        # Mostrar Carrito si tiene ítems
+        # Mostrar Carrito si tiene ítems (vista compacta ideal para celular)
         if st.session_state["cart"]:
             st.divider()
             st.markdown(f"### 🛍️ Carrito Actual ({len(st.session_state['cart'])} productos)")
             df_cart = pd.DataFrame(st.session_state["cart"])
             total_carrito = int(df_cart["total"].sum())
-            st.dataframe(df_cart, width="stretch", hide_index=True)
+            df_cart_view = df_cart[["producto", "cantidad", "total"]].rename(
+                columns={"producto": "Producto", "cantidad": "Cant.", "total": "Total"}
+            )
+            st.dataframe(
+                df_cart_view,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "Producto": st.column_config.TextColumn("Producto", width="medium"),
+                    "Cant.": st.column_config.NumberColumn("Cant.", width="small"),
+                    "Total": st.column_config.NumberColumn("Total", format="$%d", width="small"),
+                },
+            )
             st.markdown(f"#### 💰 Total del Pedido: **${total_carrito:,} COP**")
 
             # Recibo rápido para WhatsApp
@@ -1441,7 +1453,7 @@ with tab_reg:
 
             cb1, cb2 = st.columns([3, 1])
             with cb1:
-                if st.button("✅ Guardar Todo el Carrito en Excel", type="primary", width="stretch"):
+                if st.button("✅ Guardar Todo el Carrito", type="primary", width="stretch"):
                     try:
                         filas = save_cart_movements(st.session_state["cart"])
                         st.session_state["cart"] = []
