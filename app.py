@@ -1421,25 +1421,29 @@ with tab_reg:
                 except Exception as e:
                     st.error(f"❌ Error al guardar: {e}")
 
-        # Mostrar Carrito si tiene ítems (vista compacta ideal para celular)
+        # Mostrar Carrito si tiene ítems (vista compacta ideal para celular + toggle de detalle para PC)
         if st.session_state["cart"]:
             st.divider()
             st.markdown(f"### 🛍️ Carrito Actual ({len(st.session_state['cart'])} productos)")
             df_cart = pd.DataFrame(st.session_state["cart"])
             total_carrito = int(df_cart["total"].sum())
-            df_cart_view = df_cart[["producto", "cantidad", "total"]].rename(
-                columns={"producto": "Producto", "cantidad": "Cant.", "total": "Total"}
-            )
-            st.dataframe(
-                df_cart_view,
-                width="stretch",
-                hide_index=True,
-                column_config={
-                    "Producto": st.column_config.TextColumn("Producto", width="medium"),
-                    "Cant.": st.column_config.NumberColumn("Cant.", width="small"),
-                    "Total": st.column_config.NumberColumn("Total", format="$%d", width="small"),
-                },
-            )
+            ver_detalle_cart = st.checkbox("👁️ Ver detalle completo (Fecha, Tipo, Cliente, Pago)", value=False, key="cart_ver_detalle")
+            if ver_detalle_cart:
+                st.dataframe(df_cart, width="stretch", hide_index=True)
+            else:
+                df_cart_view = df_cart[["producto", "cantidad", "total"]].rename(
+                    columns={"producto": "Producto", "cantidad": "Cant.", "total": "Total"}
+                )
+                st.dataframe(
+                    df_cart_view,
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "Producto": st.column_config.TextColumn("Producto", width="medium"),
+                        "Cant.": st.column_config.NumberColumn("Cant.", width="small"),
+                        "Total": st.column_config.NumberColumn("Total", format="$%d", width="small"),
+                    },
+                )
             st.markdown(f"#### 💰 Total del Pedido: **${total_carrito:,} COP**")
 
             # Recibo rápido para WhatsApp
