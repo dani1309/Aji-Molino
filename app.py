@@ -143,7 +143,8 @@ def is_cloud_mode():
         return False
 
 
-def _get_gsheets_client():
+@st.cache_resource(show_spinner=False)
+def _get_gspread_auth():
     import gspread
     from google.oauth2.service_account import Credentials
 
@@ -152,7 +153,11 @@ def _get_gsheets_client():
         "https://www.googleapis.com/auth/drive",
     ]
     creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=scopes)
-    gc = gspread.authorize(creds)
+    return gspread.authorize(creds)
+
+
+def _get_gsheets_client():
+    gc = _get_gspread_auth()
     if "spreadsheet_id" in st.secrets:
         return gc.open_by_key(st.secrets["spreadsheet_id"])
     return gc.open_by_url(st.secrets["spreadsheet_url"])
@@ -195,7 +200,7 @@ def _compute_inventory_dfs(inv_rows, mov_rows):
     return df_inv, df_mov
 
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def _load_gsheets_cached():
     sh = _get_gsheets_client()
     ws_inv = sh.worksheet("📦 INVENTARIO")
@@ -875,7 +880,7 @@ def parse_notebook_image_with_gemini(image_bytes: bytes, mime_type: str, catalog
 
     last_err = None
     raw_text = ""
-    for model_name in ("gemini-3.8-flash", "gemini-3.5-flash-lite"):
+    for model_name in ("gemini-3.5-flash-lite", "gemini-3.8-flash"):
         try:
             res = client.interactions.create(
                 model=model_name,
@@ -946,7 +951,7 @@ def parse_voice_order_with_gemini(audio_bytes: bytes, mime_type: str, df_inv_loc
 
     last_err = None
     raw_text = ""
-    for model_name in ("gemini-3.8-flash", "gemini-3.5-flash-lite"):
+    for model_name in ("gemini-3.5-flash-lite", "gemini-3.8-flash"):
         try:
             res = client.interactions.create(
                 model=model_name,
@@ -1108,349 +1113,353 @@ else:
 # TAB 1: REGISTRAR MOVIMIENTO (Admin: Todo | Empleado: Solo Ventas)
 # ------------------------------------------------------------------------------
 with tab_reg:
-    st.subheader("Registrar Venta" if not is_admin else "Registrar Venta, Compra o Ajuste")
+    @getattr(st, 'fragment', lambda fn: fn)
+    def _render_tab_reg():
+        st.subheader("Registrar Venta" if not is_admin else "Registrar Venta, Compra o Ajuste")
 
-    if "cart" not in st.session_state:
-        st.session_state["cart"] = []
+        if "cart" not in st.session_state:
+            st.session_state["cart"] = []
 
-    # 🎤 Dictado rápido por voz con Gemini -> carga directo al Carrito para confirmar y guardar
-    with st.expander("🎤 Dictar por Voz (habla y se agrega al Carrito)", expanded=False):
-        st.caption(
-            "Toca el micrófono y di por ejemplo: *'Vendí dos aceites de coco y tres pulparindos por Nequi'*."
-        )
-        audio_val = st.audio_input("Grabar nota de voz", key="reg_voice_audio")
-        if audio_val is not None:
-            if st.button("🤖 Entender Audio y Cargar al Carrito", type="primary", width="stretch", key="btn_parse_voice"):
-                with st.spinner("Escuchando y buscando tus productos..."):
-                    try:
-                        audio_bytes = audio_val.getvalue()
-                        mime_a = getattr(audio_val, "type", None) or "audio/wav"
-                        res_v = parse_voice_order_with_gemini(audio_bytes, mime_a, df_inv, allow_all_types=is_admin)
-                        transc = str(res_v.get("transcripcion") or "").strip()
-                        if transc:
-                            st.info(f"🗣️ **Escuché:** *\"{transc}\"*")
-                        prod_map_v = df_inv.set_index("Producto").to_dict(orient="index")
-                        added_n = 0
-                        no_match = []
-                        for it in res_v.get("items", []):
-                            p_n = str(it.get("producto") or "").strip()
-                            if not p_n or p_n not in prod_map_v:
-                                no_match.append(str(it.get("nota") or p_n or "ítem no reconocido"))
-                                continue
-                            t_c = str(it.get("tipo") or "SALIDA").strip().upper()
-                            if not is_admin or t_c not in ("SALIDA", "ENTRADA", "AJUSTE"):
-                                t_c = "SALIDA"
-                            q_i = int(round(to_float(it.get("cantidad"), 1)))
-                            if q_i == 0:
-                                q_i = 1
-                            if t_c != "AJUSTE":
-                                q_i = abs(q_i)
-                            info_v = prod_map_v[p_n]
-                            v_u = int(info_v["PVF"] if t_c == "SALIDA" else info_v["Costo c/IVA"])
-                            pago_v = str(it.get("medio_pago") or "Efectivo").strip()
-                            cli_v = str(it.get("cliente") or "").strip()
-                            obs_v = str(it.get("nota") or "").strip()
-                            prefix_v = f"[Vendedor: {st.session_state['user_name']}] [Voz]" if (not is_admin and st.session_state.get("user_name")) else "[Voz]"
-                            obs_final_v = f"{prefix_v} {obs_v}".strip()
-                            st.session_state["cart"].append(
-                                {
-                                    "fecha": datetime.date.today(),
-                                    "tipo": t_c,
-                                    "producto": p_n,
-                                    "cantidad": q_i,
-                                    "valor_unit": v_u,
-                                    "total": abs(q_i) * v_u,
-                                    "cliente": cli_v,
-                                    "pago": pago_v,
-                                    "obs": obs_final_v,
-                                }
-                            )
-                            added_n += 1
-                        if added_n > 0:
-                            st.success(f"✅ Se agregaron **{added_n} producto(s)** al Carrito (revisa abajo y presiona **Guardar Todo el Carrito**).")
-                        if no_match:
-                            st.warning("⚠️ No se encontró coincidencia exacta para: " + ", ".join(no_match))
-                    except Exception as e:
-                        st.error(f"❌ No se pudo procesar el audio: {e}")
-
-    col_form, col_info = st.columns([1.3, 1], gap="large")
-
-    with col_form:
-        c1, c2 = st.columns(2)
-        with c1:
-            fecha_mov = st.date_input(
-                "📅 Fecha",
-                value=datetime.date.today(),
-                format="DD/MM/YYYY",
-                key="reg_fecha",
+        # 🎤 Dictado rápido por voz con Gemini -> carga directo al Carrito para confirmar y guardar
+        with st.expander("🎤 Dictar por Voz (habla y se agrega al Carrito)", expanded=False):
+            st.caption(
+                "Toca el micrófono y di por ejemplo: *'Vendí dos aceites de coco y tres pulparindos por Nequi'*."
             )
-        with c2:
+            audio_val = st.audio_input("Grabar nota de voz", key="reg_voice_audio")
+            if audio_val is not None:
+                if st.button("🤖 Entender Audio y Cargar al Carrito", type="primary", width="stretch", key="btn_parse_voice"):
+                    with st.spinner("Escuchando y buscando tus productos..."):
+                        try:
+                            audio_bytes = audio_val.getvalue()
+                            mime_a = getattr(audio_val, "type", None) or "audio/wav"
+                            res_v = parse_voice_order_with_gemini(audio_bytes, mime_a, df_inv, allow_all_types=is_admin)
+                            transc = str(res_v.get("transcripcion") or "").strip()
+                            if transc:
+                                st.info(f"🗣️ **Escuché:** *\"{transc}\"*")
+                            prod_map_v = df_inv.set_index("Producto").to_dict(orient="index")
+                            added_n = 0
+                            no_match = []
+                            for it in res_v.get("items", []):
+                                p_n = str(it.get("producto") or "").strip()
+                                if not p_n or p_n not in prod_map_v:
+                                    no_match.append(str(it.get("nota") or p_n or "ítem no reconocido"))
+                                    continue
+                                t_c = str(it.get("tipo") or "SALIDA").strip().upper()
+                                if not is_admin or t_c not in ("SALIDA", "ENTRADA", "AJUSTE"):
+                                    t_c = "SALIDA"
+                                q_i = int(round(to_float(it.get("cantidad"), 1)))
+                                if q_i == 0:
+                                    q_i = 1
+                                if t_c != "AJUSTE":
+                                    q_i = abs(q_i)
+                                info_v = prod_map_v[p_n]
+                                v_u = int(info_v["PVF"] if t_c == "SALIDA" else info_v["Costo c/IVA"])
+                                pago_v = str(it.get("medio_pago") or "Efectivo").strip()
+                                cli_v = str(it.get("cliente") or "").strip()
+                                obs_v = str(it.get("nota") or "").strip()
+                                prefix_v = f"[Vendedor: {st.session_state['user_name']}] [Voz]" if (not is_admin and st.session_state.get("user_name")) else "[Voz]"
+                                obs_final_v = f"{prefix_v} {obs_v}".strip()
+                                st.session_state["cart"].append(
+                                    {
+                                        "fecha": datetime.date.today(),
+                                        "tipo": t_c,
+                                        "producto": p_n,
+                                        "cantidad": q_i,
+                                        "valor_unit": v_u,
+                                        "total": abs(q_i) * v_u,
+                                        "cliente": cli_v,
+                                        "pago": pago_v,
+                                        "obs": obs_final_v,
+                                    }
+                                )
+                                added_n += 1
+                            if added_n > 0:
+                                st.success(f"✅ Se agregaron **{added_n} producto(s)** al Carrito (revisa abajo y presiona **Guardar Todo el Carrito**).")
+                            if no_match:
+                                st.warning("⚠️ No se encontró coincidencia exacta para: " + ", ".join(no_match))
+                        except Exception as e:
+                            st.error(f"❌ No se pudo procesar el audio: {e}")
+
+        col_form, col_info = st.columns([1.3, 1], gap="large")
+
+        with col_form:
+            c1, c2 = st.columns(2)
+            with c1:
+                fecha_mov = st.date_input(
+                    "📅 Fecha",
+                    value=datetime.date.today(),
+                    format="DD/MM/YYYY",
+                    key="reg_fecha",
+                )
+            with c2:
+                if is_admin:
+                    tipo_label = st.selectbox(
+                        "🔄 Tipo de Movimiento",
+                        ["SALIDA (Venta)", "ENTRADA (Compra a proveedor)", "AJUSTE (Conteo físico / Merma)"],
+                        key="reg_tipo",
+                    )
+                    tipo_code = tipo_label.split(" ")[0]
+                else:
+                    st.selectbox("🔄 Tipo de Movimiento", ["SALIDA (Venta)"], disabled=True, key="reg_tipo_emp")
+                    tipo_code = "SALIDA"
+
+            productos_lista = sorted(df_inv["Producto"].tolist())
+            producto_sel = st.selectbox(
+                "🔍 Buscar Producto por Nombre (escribe para filtrar)",
+                options=productos_lista,
+                index=0,
+                key="reg_prod",
+            )
+
+            prod_row = df_inv[df_inv["Producto"] == producto_sel].iloc[0]
+            precio_alt = prod_row["Precio Alt."]
+            has_alt = precio_alt is not None and not pd.isna(precio_alt) and int(precio_alt) > 0
+
+            # Selector rápido de tarifa (Empleado nunca ve Costo c/IVA ni puede editar el precio)
+            tarifa_opts = ["Precio Venta Normal (PVF)"]
+            if has_alt:
+                tarifa_opts.append(f"Precio Fracción / Mayor (${int(precio_alt):,})")
             if is_admin:
-                tipo_label = st.selectbox(
-                    "🔄 Tipo de Movimiento",
-                    ["SALIDA (Venta)", "ENTRADA (Compra a proveedor)", "AJUSTE (Conteo físico / Merma)"],
-                    key="reg_tipo",
-                )
-                tipo_code = tipo_label.split(" ")[0]
-            else:
-                st.selectbox("🔄 Tipo de Movimiento", ["SALIDA (Venta)"], disabled=True, key="reg_tipo_emp")
-                tipo_code = "SALIDA"
+                tarifa_opts.append("Costo c/IVA")
+            default_tarifa_idx = 0 if tipo_code == "SALIDA" else len(tarifa_opts) - 1
 
-        productos_lista = sorted(df_inv["Producto"].tolist())
-        producto_sel = st.selectbox(
-            "🔍 Buscar Producto por Nombre (escribe para filtrar)",
-            options=productos_lista,
-            index=0,
-            key="reg_prod",
-        )
-
-        prod_row = df_inv[df_inv["Producto"] == producto_sel].iloc[0]
-        precio_alt = prod_row["Precio Alt."]
-        has_alt = precio_alt is not None and not pd.isna(precio_alt) and int(precio_alt) > 0
-
-        # Selector rápido de tarifa (Empleado nunca ve Costo c/IVA ni puede editar el precio)
-        tarifa_opts = ["Precio Venta Normal (PVF)"]
-        if has_alt:
-            tarifa_opts.append(f"Precio Fracción / Mayor (${int(precio_alt):,})")
-        if is_admin:
-            tarifa_opts.append("Costo c/IVA")
-        default_tarifa_idx = 0 if tipo_code == "SALIDA" else len(tarifa_opts) - 1
-
-        c3, c4, c5 = st.columns([1, 1.3, 1])
-        with c3:
-            cantidad = st.number_input("🔢 Cantidad", min_value=1, step=1, value=1, key="reg_qty")
-        with c4:
-            tarifa_sel = st.selectbox("🏷️ Tarifa base", tarifa_opts, index=default_tarifa_idx, key="reg_tarifa")
-        with c5:
-            if "Fracción" in tarifa_sel and has_alt:
-                precio_sugerido = int(precio_alt)
-            elif "Costo" in tarifa_sel and is_admin:
-                precio_sugerido = int(prod_row["Costo c/IVA"])
-            else:
-                precio_sugerido = int(prod_row["PVF"])
-            precio_unitario = st.number_input(
-                "💲 Valor Unitario ($)",
-                min_value=0,
-                step=100,
-                value=precio_sugerido,
-                disabled=not is_admin,
-                key=f"reg_vunit_{producto_sel}_{tarifa_sel}",
-            )
-
-        c6, c7 = st.columns(2)
-        with c6:
-            pagos_disponibles = (
-                [
-                    "Efectivo",
-                    "Nequi / Daviplata",
-                    "Transferencia Bancaria",
-                    "Tarjeta / Datáfono",
-                    "Factura Proveedor",
-                    "Crédito Cliente",
-                    "Ajuste Interno",
-                ]
-                if is_admin
-                else ["Efectivo", "Nequi / Daviplata", "Transferencia Bancaria", "Tarjeta / Datáfono"]
-            )
-            medio_pago = st.selectbox(
-                "💳 Medio de Pago",
-                pagos_disponibles,
-                index=6 if (is_admin and tipo_code == "AJUSTE") else 0,
-                key="reg_pago",
-            )
-        with c7:
-            cliente_prov = st.text_input(
-                "👤 Cliente" if not is_admin else "👤 Cliente / Proveedor / Motivo",
-                placeholder="Ej. Venta mostrador, nombre cliente...",
-                key="reg_cli",
-            )
-
-        ajuste_signo = "➕ Sumar"
-        motivo_ajuste = ""
-        if tipo_code == "AJUSTE":
-            aj1, aj2 = st.columns(2)
-            with aj1:
-                ajuste_signo = st.radio(
-                    "⚖️ Acción en el Stock",
-                    ["➖ Restar (Dañado / Vencido / Merma)", "➕ Sumar (Sobrante)"],
-                    horizontal=True,
-                    key="reg_ajuste_signo",
-                )
-            with aj2:
-                motivo_ajuste = st.selectbox(
-                    "📌 Motivo del ajuste",
-                    ["Producto dañado / echado a perder", "Producto vencido", "Merma / pérdida", "Conteo físico", "Otro"],
-                    key="reg_ajuste_motivo",
+            c3, c4, c5 = st.columns([1, 1.3, 1])
+            with c3:
+                cantidad = st.number_input("🔢 Cantidad", min_value=1, step=1, value=1, key="reg_qty")
+            with c4:
+                tarifa_sel = st.selectbox("🏷️ Tarifa base", tarifa_opts, index=default_tarifa_idx, key="reg_tarifa")
+            with c5:
+                if "Fracción" in tarifa_sel and has_alt:
+                    precio_sugerido = int(precio_alt)
+                elif "Costo" in tarifa_sel and is_admin:
+                    precio_sugerido = int(prod_row["Costo c/IVA"])
+                else:
+                    precio_sugerido = int(prod_row["PVF"])
+                precio_unitario = st.number_input(
+                    "💲 Valor Unitario ($)",
+                    min_value=0,
+                    step=100,
+                    value=precio_sugerido,
+                    disabled=not is_admin,
+                    key=f"reg_vunit_{producto_sel}_{tarifa_sel}",
                 )
 
-        obs_mov = st.text_input("📝 Observaciones (opcional)", key="reg_obs")
-
-        unidades_x_paq = 1
-        modo_precio_paq = "Unidad suelta"
-        if is_admin and tipo_code == "ENTRADA":
-            m_pack = re.search(r"(?:\*|x\s*|dp\s*\*?\s*|pqte\s*\*?\s*|display\s*x?\s*)(\d+)\b", f"{producto_sel} {prod_row['Presentación']}", re.IGNORECASE)
-            auto_pack = int(m_pack.group(1)) if (m_pack and 2 <= int(m_pack.group(1)) <= 100) else 1
-            pk1, pk2 = st.columns([1, 1.3])
-            with pk1:
-                unidades_x_paq = st.number_input(
-                    "📦 Unidades por paquete (1 = suelto)",
-                    min_value=1,
-                    step=1,
-                    value=auto_pack,
-                    key=f"reg_pack_{producto_sel}",
+            c6, c7 = st.columns(2)
+            with c6:
+                pagos_disponibles = (
+                    [
+                        "Efectivo",
+                        "Nequi / Daviplata",
+                        "Transferencia Bancaria",
+                        "Tarjeta / Datáfono",
+                        "Factura Proveedor",
+                        "Crédito Cliente",
+                        "Ajuste Interno",
+                    ]
+                    if is_admin
+                    else ["Efectivo", "Nequi / Daviplata", "Transferencia Bancaria", "Tarjeta / Datáfono"]
                 )
-            with pk2:
-                if unidades_x_paq > 1:
-                    modo_precio_paq = st.radio(
-                        "💲 El Valor Unitario es por:",
-                        ["Unidad suelta", "Paquete completo"],
+                medio_pago = st.selectbox(
+                    "💳 Medio de Pago",
+                    pagos_disponibles,
+                    index=6 if (is_admin and tipo_code == "AJUSTE") else 0,
+                    key="reg_pago",
+                )
+            with c7:
+                cliente_prov = st.text_input(
+                    "👤 Cliente" if not is_admin else "👤 Cliente / Proveedor / Motivo",
+                    placeholder="Ej. Venta mostrador, nombre cliente...",
+                    key="reg_cli",
+                )
+
+            ajuste_signo = "➕ Sumar"
+            motivo_ajuste = ""
+            if tipo_code == "AJUSTE":
+                aj1, aj2 = st.columns(2)
+                with aj1:
+                    ajuste_signo = st.radio(
+                        "⚖️ Acción en el Stock",
+                        ["➖ Restar (Dañado / Vencido / Merma)", "➕ Sumar (Sobrante)"],
                         horizontal=True,
-                        key="reg_modo_paq",
+                        key="reg_ajuste_signo",
+                    )
+                with aj2:
+                    motivo_ajuste = st.selectbox(
+                        "📌 Motivo del ajuste",
+                        ["Producto dañado / echado a perder", "Producto vencido", "Merma / pérdida", "Conteo físico", "Otro"],
+                        key="reg_ajuste_motivo",
                     )
 
-    if tipo_code == "AJUSTE" and "Restar" in ajuste_signo:
-        cantidad_real = -int(cantidad)
-    elif tipo_code == "ENTRADA":
-        cantidad_real = int(cantidad) * int(unidades_x_paq)
-    else:
-        cantidad_real = int(cantidad)
+            obs_mov = st.text_input("📝 Observaciones (opcional)", key="reg_obs")
 
-    if tipo_code == "ENTRADA" and unidades_x_paq > 1 and modo_precio_paq == "Paquete completo":
-        total_mov = int(cantidad) * int(precio_unitario)
-        precio_unit_efectivo = round(precio_unitario / unidades_x_paq)
-    else:
-        total_mov = abs(int(cantidad_real)) * int(precio_unitario)
-        precio_unit_efectivo = int(precio_unitario)
+            unidades_x_paq = 1
+            modo_precio_paq = "Unidad suelta"
+            if is_admin and tipo_code == "ENTRADA":
+                m_pack = re.search(r"(?:\*|x\s*|dp\s*\*?\s*|pqte\s*\*?\s*|display\s*x?\s*)(\d+)\b", f"{producto_sel} {prod_row['Presentación']}", re.IGNORECASE)
+                auto_pack = int(m_pack.group(1)) if (m_pack and 2 <= int(m_pack.group(1)) <= 100) else 1
+                pk1, pk2 = st.columns([1, 1.3])
+                with pk1:
+                    unidades_x_paq = st.number_input(
+                        "📦 Unidades por paquete (1 = suelto)",
+                        min_value=1,
+                        step=1,
+                        value=auto_pack,
+                        key=f"reg_pack_{producto_sel}",
+                    )
+                with pk2:
+                    if unidades_x_paq > 1:
+                        modo_precio_paq = st.radio(
+                            "💲 El Valor Unitario es por:",
+                            ["Unidad suelta", "Paquete completo"],
+                            horizontal=True,
+                            key="reg_modo_paq",
+                        )
 
-    stock_nuevo_est = (
-        int(prod_row["Stock Actual"]) + cantidad_real
-        if tipo_code in ("ENTRADA", "AJUSTE")
-        else int(prod_row["Stock Actual"]) - int(cantidad)
-    )
-
-    with col_info:
-        st.markdown("#### 📋 Detalle del Producto")
-        m1, m2 = st.columns(2)
-        m1.metric("Stock Actual", f"{prod_row['Stock Actual']} und", f"Quedará en: {stock_nuevo_est} und")
-        m2.metric("SKU", prod_row["SKU"])
-
-        m3, m4 = st.columns(2)
-        m3.metric("Precio Venta (PVF)", f"${prod_row['PVF']:,}")
-        if is_admin:
-            m4.metric("Costo c/IVA", f"${prod_row['Costo c/IVA']:,}")
+        if tipo_code == "AJUSTE" and "Restar" in ajuste_signo:
+            cantidad_real = -int(cantidad)
+        elif tipo_code == "ENTRADA":
+            cantidad_real = int(cantidad) * int(unidades_x_paq)
         else:
-            m4.metric("Estado Stock", prod_row["Estado"])
+            cantidad_real = int(cantidad)
 
-        extra_alt = f"  \n**Precio Fracción / Mayor:** ${int(precio_alt):,}" if has_alt else ""
-        st.info(
-            f"**Categoría:** {prod_row['Categoría']}  \n"
-            f"**Presentación:** {prod_row['Presentación']}{extra_alt}  \n"
-            f"**Total de esta línea:** **${total_mov:,} COP**"
+        if tipo_code == "ENTRADA" and unidades_x_paq > 1 and modo_precio_paq == "Paquete completo":
+            total_mov = int(cantidad) * int(precio_unitario)
+            precio_unit_efectivo = round(precio_unitario / unidades_x_paq)
+        else:
+            total_mov = abs(int(cantidad_real)) * int(precio_unitario)
+            precio_unit_efectivo = int(precio_unitario)
+
+        stock_nuevo_est = (
+            int(prod_row["Stock Actual"]) + cantidad_real
+            if tipo_code in ("ENTRADA", "AJUSTE")
+            else int(prod_row["Stock Actual"]) - int(cantidad)
         )
 
-        if (tipo_code == "SALIDA" and cantidad > prod_row["Stock Actual"]) or (
-            tipo_code == "AJUSTE" and "Restar" in ajuste_signo and cantidad > prod_row["Stock Actual"]
-        ):
-            st.warning(
-                f"⚠️ Atención: estás descontando **{cantidad}** und, pero solo hay **{prod_row['Stock Actual']}** en stock."
+        with col_info:
+            st.markdown("#### 📋 Detalle del Producto")
+            m1, m2 = st.columns(2)
+            m1.metric("Stock Actual", f"{prod_row['Stock Actual']} und", f"Quedará en: {stock_nuevo_est} und")
+            m2.metric("SKU", prod_row["SKU"])
+
+            m3, m4 = st.columns(2)
+            m3.metric("Precio Venta (PVF)", f"${prod_row['PVF']:,}")
+            if is_admin:
+                m4.metric("Costo c/IVA", f"${prod_row['Costo c/IVA']:,}")
+            else:
+                m4.metric("Estado Stock", prod_row["Estado"])
+
+            extra_alt = f"  \n**Precio Fracción / Mayor:** ${int(precio_alt):,}" if has_alt else ""
+            st.info(
+                f"**Categoría:** {prod_row['Categoría']}  \n"
+                f"**Presentación:** {prod_row['Presentación']}{extra_alt}  \n"
+                f"**Total de esta línea:** **${total_mov:,} COP**"
             )
 
-    def _build_mov_notes():
-        cli_out = cliente_prov.strip()
-        if tipo_code == "AJUSTE" and not cli_out:
-            cli_out = motivo_ajuste
-        obs_out = obs_mov.strip()
-        if not is_admin and st.session_state.get("user_name"):
-            obs_out = f"[Vendedor: {st.session_state['user_name']}] {obs_out}".strip()
-        if tipo_code == "ENTRADA" and unidades_x_paq > 1:
-            nota_pk = f"Compra: {cantidad} paq x {unidades_x_paq} und = {cantidad_real} und"
-            obs_out = f"{nota_pk} | {obs_out}".strip(" |")
-        if tipo_code == "AJUSTE" and motivo_ajuste and motivo_ajuste not in obs_out and cli_out != motivo_ajuste:
-            obs_out = f"{motivo_ajuste} | {obs_out}".strip(" |")
-        if precio_unit_efectivo != (prod_row["PVF"] if tipo_code == "SALIDA" else prod_row["Costo c/IVA"]):
-            nota_precio = f"Tarifa aplicada: ${precio_unit_efectivo:,}"
-            obs_out = f"{obs_out} | {nota_precio}".strip(" |")
-        return cli_out, obs_out
+            if (tipo_code == "SALIDA" and cantidad > prod_row["Stock Actual"]) or (
+                tipo_code == "AJUSTE" and "Restar" in ajuste_signo and cantidad > prod_row["Stock Actual"]
+            ):
+                st.warning(
+                    f"⚠️ Atención: estás descontando **{cantidad}** und, pero solo hay **{prod_row['Stock Actual']}** en stock."
+                )
 
-    btn1, btn2 = st.columns(2)
-    with btn1:
-        if st.button("➕ Agregar al Carrito (Varios Productos)", width="stretch"):
-            cli_out, obs_final = _build_mov_notes()
-            st.session_state["cart"].append(
-                {
-                    "fecha": fecha_mov,
-                    "tipo": tipo_code,
-                    "producto": producto_sel,
-                    "cantidad": int(cantidad_real),
-                    "valor_unit": int(precio_unit_efectivo),
-                    "total": int(total_mov),
-                    "cliente": cli_out,
-                    "pago": medio_pago,
-                    "obs": obs_final,
-                }
-            )
-            st.success(f"➕ Agregado al carrito: **{cantidad_real:+} x {producto_sel}** (${total_mov:,})")
+        def _build_mov_notes():
+            cli_out = cliente_prov.strip()
+            if tipo_code == "AJUSTE" and not cli_out:
+                cli_out = motivo_ajuste
+            obs_out = obs_mov.strip()
+            if not is_admin and st.session_state.get("user_name"):
+                obs_out = f"[Vendedor: {st.session_state['user_name']}] {obs_out}".strip()
+            if tipo_code == "ENTRADA" and unidades_x_paq > 1:
+                nota_pk = f"Compra: {cantidad} paq x {unidades_x_paq} und = {cantidad_real} und"
+                obs_out = f"{nota_pk} | {obs_out}".strip(" |")
+            if tipo_code == "AJUSTE" and motivo_ajuste and motivo_ajuste not in obs_out and cli_out != motivo_ajuste:
+                obs_out = f"{motivo_ajuste} | {obs_out}".strip(" |")
+            if precio_unit_efectivo != (prod_row["PVF"] if tipo_code == "SALIDA" else prod_row["Costo c/IVA"]):
+                nota_precio = f"Tarifa aplicada: ${precio_unit_efectivo:,}"
+                obs_out = f"{obs_out} | {nota_precio}".strip(" |")
+            return cli_out, obs_out
 
-    with btn2:
-        if st.button("💾 Guardar Movimiento Directo", type="primary", width="stretch"):
-            try:
+        btn1, btn2 = st.columns(2)
+        with btn1:
+            if st.button("➕ Agregar al Carrito (Varios Productos)", width="stretch"):
                 cli_out, obs_final = _build_mov_notes()
-                fila_guardada = save_movement(
-                    fecha_mov, tipo_code, producto_sel, cantidad_real, cli_out, medio_pago, obs_final
+                st.session_state["cart"].append(
+                    {
+                        "fecha": fecha_mov,
+                        "tipo": tipo_code,
+                        "producto": producto_sel,
+                        "cantidad": int(cantidad_real),
+                        "valor_unit": int(precio_unit_efectivo),
+                        "total": int(total_mov),
+                        "cliente": cli_out,
+                        "pago": medio_pago,
+                        "obs": obs_final,
+                    }
                 )
-                st.session_state.pop("hist_work", None)
-                st.session_state["hist_ver"] = st.session_state.get("hist_ver", 0) + 1
-                destino_txt = "Google Sheets" if is_cloud_mode() else "LISTADO_VENTA.xlsx"
-                st.session_state["popup_msg"] = (
-                    f"¡Movimiento guardado en {destino_txt} (fila {fila_guardada})!\n\n"
-                    f"**{tipo_code}** · **{cantidad_real} x {producto_sel}** ({fecha_mov.strftime('%d/%m/%Y')}) — Stock nuevo: **{stock_nuevo_est} und**"
-                )
-                st.rerun()
-            except PermissionError:
-                st.error(
-                    "❌ **No se pudo guardar porque tienes `LISTADO_VENTA.xlsx` abierto en Excel.** "
-                    "Ciérralo en Excel un momento y vuelve a hacer clic en Guardar."
-                )
-            except Exception as e:
-                st.error(f"❌ Error al guardar: {e}")
+                st.success(f"➕ Agregado al carrito: **{cantidad_real:+} x {producto_sel}** (${total_mov:,})")
 
-    # Mostrar Carrito si tiene ítems
-    if st.session_state["cart"]:
-        st.divider()
-        st.markdown(f"### 🛍️ Carrito Actual ({len(st.session_state['cart'])} productos)")
-        df_cart = pd.DataFrame(st.session_state["cart"])
-        total_carrito = int(df_cart["total"].sum())
-        st.dataframe(df_cart, width="stretch", hide_index=True)
-        st.markdown(f"#### 💰 Total del Pedido: **${total_carrito:,} COP**")
-
-        # Recibo rápido para WhatsApp
-        lineas_wsp = [
-            f"🌶️ *AJÍ Y MOLINO* — Resumen ({fecha_mov.strftime('%d/%m/%Y')})",
-            *(f"• {it['cantidad']}x {it['producto']} — ${it['total']:,}" for it in st.session_state["cart"]),
-            f"*TOTAL: ${total_carrito:,} COP* ({medio_pago})",
-        ]
-        with st.expander("📲 Copiar recibo para WhatsApp"):
-            st.code("\n".join(lineas_wsp), language="text")
-
-        cb1, cb2 = st.columns([3, 1])
-        with cb1:
-            if st.button("✅ Guardar Todo el Carrito en Excel", type="primary", width="stretch"):
+        with btn2:
+            if st.button("💾 Guardar Movimiento Directo", type="primary", width="stretch"):
                 try:
-                    filas = save_cart_movements(st.session_state["cart"])
-                    st.session_state["cart"] = []
+                    cli_out, obs_final = _build_mov_notes()
+                    fila_guardada = save_movement(
+                        fecha_mov, tipo_code, producto_sel, cantidad_real, cli_out, medio_pago, obs_final
+                    )
                     st.session_state.pop("hist_work", None)
                     st.session_state["hist_ver"] = st.session_state.get("hist_ver", 0) + 1
                     destino_txt = "Google Sheets" if is_cloud_mode() else "LISTADO_VENTA.xlsx"
-                    st.session_state["popup_msg"] = f"¡Carrito guardado en {destino_txt} (filas {filas[0]} a {filas[-1]})!"
+                    st.session_state["popup_msg"] = (
+                        f"¡Movimiento guardado en {destino_txt} (fila {fila_guardada})!\n\n"
+                        f"**{tipo_code}** · **{cantidad_real} x {producto_sel}** ({fecha_mov.strftime('%d/%m/%Y')}) — Stock nuevo: **{stock_nuevo_est} und**"
+                    )
                     st.rerun()
                 except PermissionError:
-                    st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder guardar el carrito.")
+                    st.error(
+                        "❌ **No se pudo guardar porque tienes `LISTADO_VENTA.xlsx` abierto en Excel.** "
+                        "Ciérralo en Excel un momento y vuelve a hacer clic en Guardar."
+                    )
                 except Exception as e:
-                    st.error(f"❌ Error al guardar el carrito: {e}")
-        with cb2:
-            if st.button("🗑️ Vaciar Carrito", width="stretch"):
-                st.session_state["cart"] = []
-                st.rerun()
+                    st.error(f"❌ Error al guardar: {e}")
+
+        # Mostrar Carrito si tiene ítems
+        if st.session_state["cart"]:
+            st.divider()
+            st.markdown(f"### 🛍️ Carrito Actual ({len(st.session_state['cart'])} productos)")
+            df_cart = pd.DataFrame(st.session_state["cart"])
+            total_carrito = int(df_cart["total"].sum())
+            st.dataframe(df_cart, width="stretch", hide_index=True)
+            st.markdown(f"#### 💰 Total del Pedido: **${total_carrito:,} COP**")
+
+            # Recibo rápido para WhatsApp
+            lineas_wsp = [
+                f"🌶️ *AJÍ Y MOLINO* — Resumen ({fecha_mov.strftime('%d/%m/%Y')})",
+                *(f"• {it['cantidad']}x {it['producto']} — ${it['total']:,}" for it in st.session_state["cart"]),
+                f"*TOTAL: ${total_carrito:,} COP* ({medio_pago})",
+            ]
+            with st.expander("📲 Copiar recibo para WhatsApp"):
+                st.code("\n".join(lineas_wsp), language="text")
+
+            cb1, cb2 = st.columns([3, 1])
+            with cb1:
+                if st.button("✅ Guardar Todo el Carrito en Excel", type="primary", width="stretch"):
+                    try:
+                        filas = save_cart_movements(st.session_state["cart"])
+                        st.session_state["cart"] = []
+                        st.session_state.pop("hist_work", None)
+                        st.session_state["hist_ver"] = st.session_state.get("hist_ver", 0) + 1
+                        destino_txt = "Google Sheets" if is_cloud_mode() else "LISTADO_VENTA.xlsx"
+                        st.session_state["popup_msg"] = f"¡Carrito guardado en {destino_txt} (filas {filas[0]} a {filas[-1]})!"
+                        st.rerun()
+                    except PermissionError:
+                        st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder guardar el carrito.")
+                    except Exception as e:
+                        st.error(f"❌ Error al guardar el carrito: {e}")
+            with cb2:
+                if st.button("🗑️ Vaciar Carrito", width="stretch"):
+                    st.session_state["cart"] = []
+                    st.rerun()
+
+    _render_tab_reg()
 
 # ------------------------------------------------------------------------------
 # TAB 3: INVENTARIO COMPLETO + EDICIÓN RÁPIDA DE PRECIOS/STOCK
