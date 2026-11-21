@@ -66,6 +66,16 @@ st.markdown(
 # ==============================================================================
 # LECTURA Y ESCRITURA EN LISTADO_VENTA.xlsx
 # ==============================================================================
+def now_colombia_str() -> str:
+    """Devuelve la hora actual en Colombia (UTC-5) en formato 12h (ej. 06:05 PM)."""
+    try:
+        from zoneinfo import ZoneInfo
+        dt = datetime.datetime.now(ZoneInfo("America/Bogota"))
+    except Exception:
+        dt = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-5)))
+    return dt.strftime("%I:%M %p")
+
+
 def to_float(val, default=0.0):
     if val is None or val == "":
         return default
@@ -280,6 +290,7 @@ def _load_gsheets_cached():
                 "fila_excel": idx_r,
                 "ID Lote": lote_id,
                 "Fecha": fecha_d,
+                "Hora": str(cell_at(row_l, 15) or "").strip(),
                 "Tipo": tipo if tipo else "⚠️ SIN TIPO",
                 "Producto": prod,
                 "SKU": info.get("SKU", ""),
@@ -400,6 +411,7 @@ def _load_data_cached(file_mtime: float):
                 "fila_excel": r,
                 "ID Lote": lote_id,
                 "Fecha": fecha_d,
+                "Hora": str(ws_mov.cell(r, 15).value or "").strip(),
                 "Tipo": tipo if tipo else "⚠️ SIN TIPO",
                 "Producto": prod,
                 "SKU": sku,
@@ -523,6 +535,9 @@ def save_movement(fecha_val, tipo, producto, cantidad, cliente, pago, obs):
     ws_mov.cell(target_row, 10, cliente)
     ws_mov.cell(target_row, 11, pago)
     ws_mov.cell(target_row, 12, obs)
+    if ws_mov.cell(11, 15).value is None:
+        ws_mov.cell(11, 15, "Hora")
+    ws_mov.cell(target_row, 15, now_colombia_str())
 
     restore_data_validations(wb)
     create_daily_backup()
@@ -610,10 +625,10 @@ def save_movements_table(edited_df):
         ws_mov = sh.worksheet("🔄 MOVIMIENTOS")
         all_vals = ws_mov.get_all_values()
         max_r = max(len(all_vals), 12)
-        # Limpiar columnas editables A,B,C,G,J,K,L desde fila 12
-        updates = []
+        # Limpiar columnas editables A,B,C,G,J,K,L,O desde fila 12
+        updates = [{"range": "O11", "values": [["Hora"]]}]
         for r in range(12, max_r + 1):
-            for col_l in ("A", "B", "C", "G", "J", "K", "L"):
+            for col_l in ("A", "B", "C", "G", "J", "K", "L", "O"):
                 updates.append({"range": f"{col_l}{r}", "values": [[""]]})
         row_idx = 12
         for _, row in edited_df.iterrows():
@@ -621,6 +636,9 @@ def save_movements_table(edited_df):
             if not prod or prod.lower() in ("nan", "none"):
                 continue
             fecha_v = to_date(row.get("Fecha"))
+            hora_v = "" if pd.isna(row.get("Hora")) else str(row.get("Hora") or "").strip()
+            if not hora_v:
+                hora_v = now_colombia_str()
             tipo_v = str(row.get("Tipo") or "").strip().upper()
             if tipo_v in ("⚠️ SIN TIPO", "NAN", "NONE"):
                 tipo_v = ""
@@ -636,6 +654,7 @@ def save_movements_table(edited_df):
                 {"range": f"J{row_idx}", "values": [[cli_v]]},
                 {"range": f"K{row_idx}", "values": [[pago_v]]},
                 {"range": f"L{row_idx}", "values": [[obs_v]]},
+                {"range": f"O{row_idx}", "values": [[hora_v]]},
             ])
             row_idx += 1
         if updates:
@@ -648,10 +667,13 @@ def save_movements_table(edited_df):
 
     # Limpiar filas previas (12..500) en columnas editables
     for r in range(12, 501):
-        has_any = any(ws_mov.cell(r, c).value is not None for c in (1, 2, 3, 7, 10, 11, 12))
+        has_any = any(ws_mov.cell(r, c).value is not None for c in (1, 2, 3, 7, 10, 11, 12, 15))
         if has_any:
-            for c in (1, 2, 3, 7, 10, 11, 12):
+            for c in (1, 2, 3, 7, 10, 11, 12, 15):
                 ws_mov.cell(r, c, None)
+
+    if ws_mov.cell(11, 15).value is None:
+        ws_mov.cell(11, 15, "Hora")
 
     row_idx = 12
     for _, row in edited_df.iterrows():
@@ -659,6 +681,9 @@ def save_movements_table(edited_df):
         if not prod or prod.lower() in ("nan", "none"):
             continue
         fecha_v = to_date(row.get("Fecha"))
+        hora_v = "" if pd.isna(row.get("Hora")) else str(row.get("Hora") or "").strip()
+        if not hora_v:
+            hora_v = now_colombia_str()
         tipo_v = str(row.get("Tipo") or "").strip().upper()
         if tipo_v in ("⚠️ SIN TIPO", "NAN", "NONE"):
             tipo_v = ""
@@ -675,6 +700,7 @@ def save_movements_table(edited_df):
         ws_mov.cell(row_idx, 10, cli_v if cli_v else None)
         ws_mov.cell(row_idx, 11, pago_v if pago_v else None)
         ws_mov.cell(row_idx, 12, obs_v if obs_v else None)
+        ws_mov.cell(row_idx, 15, hora_v)
         row_idx += 1
 
     restore_data_validations(wb)
@@ -692,7 +718,8 @@ def save_cart_movements(cart_items):
         # Buscar primera fila vacía desde la 12
         start_search = 12
         saved_rows = []
-        updates = []
+        hora_actual = now_colombia_str()
+        updates = [{"range": "O11", "values": [["Hora"]]}]
         for item in cart_items:
             target_row = None
             for r in range(start_search, 501):
@@ -716,6 +743,7 @@ def save_cart_movements(cart_items):
                 {"range": f"J{target_row}", "values": [[item["cliente"] or ""]]},
                 {"range": f"K{target_row}", "values": [[item["pago"] or ""]]},
                 {"range": f"L{target_row}", "values": [[item["obs"] or ""]]},
+                {"range": f"O{target_row}", "values": [[hora_actual]]},
             ])
             saved_rows.append(target_row)
         if updates:
@@ -750,6 +778,9 @@ def save_cart_movements(cart_items):
         ws_mov.cell(target_row, 10, item["cliente"] or None)
         ws_mov.cell(target_row, 11, item["pago"] or None)
         ws_mov.cell(target_row, 12, item["obs"] or None)
+        if ws_mov.cell(11, 15).value is None:
+            ws_mov.cell(11, 15, "Hora")
+        ws_mov.cell(target_row, 15, now_colombia_str())
         saved_rows.append(target_row)
 
     restore_data_validations(wb)
@@ -1352,7 +1383,7 @@ with tab_reg:
                     destino_txt = "Google Sheets" if is_cloud_mode() else "LISTADO_VENTA.xlsx"
                     st.session_state["popup_msg"] = (
                         f"¡Movimiento guardado en {destino_txt} (fila {fila_guardada})!\n\n"
-                        f"**{tipo_code}** · **{cantidad_real} x {producto_sel}** ({fecha_mov.strftime('%d/%m/%Y')}) — Stock nuevo: **{stock_nuevo_est} und**"
+                        f"**{tipo_code}** · **{cantidad_real} x {producto_sel}** ({fecha_mov.strftime('%d/%m/%Y')} · {now_colombia_str()}) — Stock nuevo: **{stock_nuevo_est} und**"
                     )
                     st.rerun()
                 except PermissionError:
@@ -1833,7 +1864,7 @@ def render_historial_interactivo(df_inv_local, df_mov_local):
         if df_mov_local.empty:
             st.session_state["hist_work"] = pd.DataFrame(
                 columns=[
-                    "ID Lote", "Fecha", "Tipo", "Producto", "SKU", "Categoría",
+                    "ID Lote", "Fecha", "Hora", "Tipo", "Producto", "SKU", "Categoría",
                     "Cantidad", "Valor Unitario", "Total", "Cliente / Proveedor",
                     "Medio de Pago", "Observaciones",
                 ]
@@ -1861,10 +1892,11 @@ def render_historial_interactivo(df_inv_local, df_mov_local):
         hide_index=True,
         num_rows="dynamic",
         height=440,
-        disabled=["ID Lote", "SKU", "Categoría", "Valor Unitario", "Total"],
+        disabled=["ID Lote", "Hora", "SKU", "Categoría", "Valor Unitario", "Total"],
         column_config={
             "ID Lote": st.column_config.TextColumn("ID Lote (Auto)", width="small"),
             "Fecha": st.column_config.DateColumn("📅 Fecha", format="DD/MM/YYYY", width="small"),
+            "Hora": st.column_config.TextColumn("🕒 Hora (Auto)", width="small"),
             "Tipo": st.column_config.SelectboxColumn(
                 "Tipo", options=["SALIDA", "ENTRADA", "AJUSTE"], width="small"
             ),
