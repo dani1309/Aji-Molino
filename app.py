@@ -1196,25 +1196,51 @@ with tab_reg:
                 tarifa_opts.append("Costo c/IVA")
             default_tarifa_idx = 0 if tipo_code == "SALIDA" else len(tarifa_opts) - 1
 
+            unidades_x_paq = 1
+            modo_precio_paq = "Unidad suelta"
+            if is_admin and tipo_code == "ENTRADA":
+                m_pack = re.search(r"(?:\*|x\s*|dp\s*\*?\s*|pqte\s*\*?\s*|display\s*x?\s*)(\d+)\b", f"{producto_sel} {prod_row['Presentación']}", re.IGNORECASE)
+                auto_pack = int(m_pack.group(1)) if (m_pack and 2 <= int(m_pack.group(1)) <= 100) else 1
+                pk1, pk2 = st.columns([1, 1.3])
+                with pk1:
+                    unidades_x_paq = st.number_input(
+                        "📦 Unidades por paquete (1 = suelto)",
+                        min_value=1,
+                        step=1,
+                        value=auto_pack,
+                        key=f"reg_pack_{producto_sel}",
+                    )
+                with pk2:
+                    if unidades_x_paq > 1:
+                        modo_precio_paq = st.radio(
+                            "💲 El Valor Unitario es por:",
+                            ["Paquete completo", "Unidad suelta"],
+                            horizontal=True,
+                            key="reg_modo_paq",
+                        )
+
             c3, c4, c5 = st.columns([1, 1.3, 1])
             with c3:
-                cantidad = st.number_input("🔢 Cantidad", min_value=1, step=1, value=1, key="reg_qty")
+                lbl_qty = "📦 Cant. (Paquetes)" if (tipo_code == "ENTRADA" and unidades_x_paq > 1) else "🔢 Cantidad (Und)"
+                cantidad = st.number_input(lbl_qty, min_value=1, step=1, value=1, key="reg_qty")
             with c4:
                 tarifa_sel = st.selectbox("🏷️ Tarifa base", tarifa_opts, index=default_tarifa_idx, key="reg_tarifa")
             with c5:
                 if "Fracción" in tarifa_sel and has_alt:
                     precio_sugerido = int(precio_alt)
                 elif "Costo" in tarifa_sel and is_admin:
-                    precio_sugerido = int(prod_row["Costo c/IVA"])
+                    base_c = int(prod_row["Costo c/IVA"])
+                    precio_sugerido = base_c * int(unidades_x_paq) if (tipo_code == "ENTRADA" and unidades_x_paq > 1 and modo_precio_paq == "Paquete completo") else base_c
                 else:
                     precio_sugerido = int(prod_row["PVF"])
+                lbl_vunit = "💲 Valor Paquete ($)" if (tipo_code == "ENTRADA" and unidades_x_paq > 1 and modo_precio_paq == "Paquete completo") else "💲 Valor Unitario ($)"
                 precio_unitario = st.number_input(
-                    "💲 Valor Unitario ($)",
+                    lbl_vunit,
                     min_value=0,
                     step=100,
                     value=precio_sugerido,
                     disabled=not is_admin,
-                    key=f"reg_vunit_{producto_sel}_{tarifa_sel}",
+                    key=f"reg_vunit_{producto_sel}_{tarifa_sel}_{unidades_x_paq}_{modo_precio_paq}",
                 )
 
             c6, c7 = st.columns(2)
@@ -1265,29 +1291,6 @@ with tab_reg:
 
             obs_mov = st.text_input("📝 Observaciones (opcional)", key="reg_obs")
 
-            unidades_x_paq = 1
-            modo_precio_paq = "Unidad suelta"
-            if is_admin and tipo_code == "ENTRADA":
-                m_pack = re.search(r"(?:\*|x\s*|dp\s*\*?\s*|pqte\s*\*?\s*|display\s*x?\s*)(\d+)\b", f"{producto_sel} {prod_row['Presentación']}", re.IGNORECASE)
-                auto_pack = int(m_pack.group(1)) if (m_pack and 2 <= int(m_pack.group(1)) <= 100) else 1
-                pk1, pk2 = st.columns([1, 1.3])
-                with pk1:
-                    unidades_x_paq = st.number_input(
-                        "📦 Unidades por paquete (1 = suelto)",
-                        min_value=1,
-                        step=1,
-                        value=auto_pack,
-                        key=f"reg_pack_{producto_sel}",
-                    )
-                with pk2:
-                    if unidades_x_paq > 1:
-                        modo_precio_paq = st.radio(
-                            "💲 El Valor Unitario es por:",
-                            ["Unidad suelta", "Paquete completo"],
-                            horizontal=True,
-                            key="reg_modo_paq",
-                        )
-
         if tipo_code == "AJUSTE" and "Restar" in ajuste_signo:
             cantidad_real = -int(cantidad)
         elif tipo_code == "ENTRADA":
@@ -1322,9 +1325,10 @@ with tab_reg:
                 m4.metric("Estado Stock", prod_row["Estado"])
 
             extra_alt = f"  \n**Precio Fracción / Mayor:** ${int(precio_alt):,}" if has_alt else ""
+            extra_pack = f"  \n**Entran al stock:** **+{cantidad_real} unidades** ({cantidad} paq × {unidades_x_paq} und)" if (tipo_code == "ENTRADA" and unidades_x_paq > 1) else ""
             st.info(
                 f"**Categoría:** {prod_row['Categoría']}  \n"
-                f"**Presentación:** {prod_row['Presentación']}{extra_alt}  \n"
+                f"**Presentación:** {prod_row['Presentación']}{extra_alt}{extra_pack}  \n"
                 f"**Total de esta línea:** **${total_mov:,} COP**"
             )
 
