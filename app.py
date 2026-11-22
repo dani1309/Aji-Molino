@@ -562,6 +562,9 @@ def update_inventory_bulk(changes: list[dict]):
                 {"range": f"R{r}", "values": [[int(ch["pvf"])]]},
                 {"range": f"X{r}", "values": [[str(ch["obs"] or "")]]},
             ])
+            if "precio_alt" in ch:
+                p_alt_v = "" if ch["precio_alt"] in (None, 0) else int(ch["precio_alt"])
+                updates.append({"range": f"S{r}", "values": [[p_alt_v]]})
         ws_inv.batch_update(updates, value_input_option="USER_ENTERED")
         _clear_all_caches()
         return len(changes)
@@ -574,6 +577,8 @@ def update_inventory_bulk(changes: list[dict]):
         ws_inv.cell(r, 11, int(ch["stock_min"]))
         ws_inv.cell(r, 13, int(ch["costo_base"]))
         ws_inv.cell(r, 18, int(ch["pvf"]))
+        if "precio_alt" in ch:
+            ws_inv.cell(r, 19, None if ch["precio_alt"] in (None, 0) else int(ch["precio_alt"]))
         ws_inv.cell(r, 24, str(ch["obs"] or ""))
     restore_data_validations(wb)
     create_daily_backup()
@@ -1245,7 +1250,10 @@ with tab_reg:
                     precio_sugerido = base_c * int(unidades_x_paq) if (unidades_x_paq > 1 and modo_precio_paq == "Paquete completo") else base_c
                 else:
                     base_v = int(prod_row["PVF"])
-                    precio_sugerido = base_v * int(unidades_x_paq) if (unidades_x_paq > 1 and modo_precio_paq == "Paquete completo") else base_v
+                    if tipo_code == "SALIDA" and unidades_x_paq > 1 and modo_precio_paq == "Paquete completo":
+                        precio_sugerido = int(precio_alt) if has_alt else (base_v * int(unidades_x_paq))
+                    else:
+                        precio_sugerido = base_v * int(unidades_x_paq) if (unidades_x_paq > 1 and modo_precio_paq == "Paquete completo") else base_v
                 lbl_vunit = "💲 Valor Paquete ($)" if (unidades_x_paq > 1 and modo_precio_paq == "Paquete completo") else "💲 Valor Unitario ($)"
                 precio_unitario = st.number_input(
                     lbl_vunit,
@@ -1591,10 +1599,10 @@ with tab_inv:
         cols_mostrar = [
             "SKU", "Categoría", "Producto", "Presentación",
             "Stock Inicial", "Entradas (+)", "Salidas (-)", "Ajustes (+/-)",
-            "Stock Actual", "Stock Mín.", "Estado", "Costo Base", "Costo c/IVA", "PVF",
+            "Stock Actual", "Stock Mín.", "Estado", "Costo Base", "Costo c/IVA", "PVF", "Precio Alt.",
             "Valor Inv. Venta", "Observaciones",
         ]
-        st.caption("✏️ Puedes modificar directamente en la tabla **Stock Inicial**, **Stock Mín.**, **Costo Base**, **PVF** u **Observaciones** y luego guardar.")
+        st.caption("✏️ Puedes modificar directamente en la tabla **Stock Inicial**, **Stock Mín.**, **Costo Base**, **PVF**, **Precio Paquete** u **Observaciones** y luego guardar.")
         df_inv_edit_src = df_view[cols_mostrar].copy()
         edited_inv_df = st.data_editor(
             df_inv_edit_src,
@@ -1611,7 +1619,8 @@ with tab_inv:
                 "Stock Mín.": st.column_config.NumberColumn("Stock Mín. ✏️", min_value=0, step=1),
                 "Costo Base": st.column_config.NumberColumn("Costo Base ✏️", min_value=0, step=100, format="$%d"),
                 "Costo c/IVA": st.column_config.NumberColumn("Costo c/IVA", format="$%d"),
-                "PVF": st.column_config.NumberColumn("PVF ✏️", min_value=0, step=500, format="$%d"),
+                "PVF": st.column_config.NumberColumn("PVF (Unidad) ✏️", min_value=0, step=500, format="$%d"),
+                "Precio Alt.": st.column_config.NumberColumn("Precio Paquete / Mayor ✏️", min_value=0, step=500, format="$%d"),
                 "Valor Inv. Venta": st.column_config.NumberColumn("Valor Inv. Venta", format="$%d"),
                 "Observaciones": st.column_config.TextColumn("Observaciones ✏️"),
             },
@@ -1630,6 +1639,8 @@ with tab_inv:
                 s_min = int(round(to_float(r_ed["Stock Mín."], 0)))
                 c_bas = int(round(to_float(r_ed["Costo Base"], 0)))
                 pvf_v = int(round(to_float(r_ed["PVF"], 0)))
+                p_alt_ed = int(round(to_float(r_ed["Precio Alt."], 0)))
+                p_alt_orig = int(round(to_float(orig.get("Precio Alt."), 0)))
                 obs_v = "" if pd.isna(r_ed["Observaciones"]) else str(r_ed["Observaciones"] or "").strip()
 
                 if (
@@ -1637,6 +1648,7 @@ with tab_inv:
                     or s_min != int(orig["Stock Mín."])
                     or c_bas != int(orig["Costo Base"])
                     or pvf_v != int(orig["PVF"])
+                    or p_alt_ed != p_alt_orig
                     or obs_v != str(orig["Observaciones"] or "").strip()
                 ):
                     changes.append(
@@ -1646,6 +1658,7 @@ with tab_inv:
                             "stock_min": s_min,
                             "costo_base": c_bas,
                             "pvf": pvf_v,
+                            "precio_alt": p_alt_ed,
                             "obs": obs_v,
                         }
                     )
@@ -1730,25 +1743,26 @@ with tab_inv:
             m_pk_c = re.search(r"(?:\*|x\s*|dp\s*\*?\s*|pqte\s*\*?\s*|display\s*x?\s*)(\d+)\b", f"{conv_prod} {c_row['Presentación']}", re.IGNORECASE)
             def_pk_c = int(m_pk_c.group(1)) if (m_pk_c and 2 <= int(m_pk_c.group(1)) <= 100) else 10
 
-            cv1, cv2, cv3 = st.columns(3)
-            und_x_paq_conv = cv1.number_input("Unidades que trae cada paquete", min_value=2, step=1, value=def_pk_c, key=f"conv_n_{conv_prod}")
+            cv1, cv2, cv3, cv4 = st.columns(4)
+            und_x_paq_conv = cv1.number_input("Unidades por paquete", min_value=2, step=1, value=def_pk_c, key=f"conv_n_{conv_prod}")
             nuevo_s_ini_conv = int(c_row["Stock Inicial"]) * int(und_x_paq_conv)
             nuevo_c_base_conv = round(int(c_row["Costo Base"]) / int(und_x_paq_conv))
             p_alt_c = c_row["Precio Alt."]
             def_pvf_conv = int(p_alt_c) if (p_alt_c is not None and not pd.isna(p_alt_c) and int(p_alt_c) > 0) else round(int(c_row["PVF"]) / int(und_x_paq_conv))
 
-            nuevo_pvf_conv = cv2.number_input("Nuevo Precio Venta por Unidad (PVF)", min_value=0, step=100, value=def_pvf_conv, key=f"conv_pvf_{conv_prod}")
-            nuevo_smin_conv = cv3.number_input("Nuevo Stock Mínimo (unidades)", min_value=0, step=1, value=int(c_row["Stock Mín."]) * int(und_x_paq_conv), key=f"conv_smin_{conv_prod}")
+            nuevo_pvf_conv = cv2.number_input("Precio por Unidad (PVF)", min_value=0, step=100, value=def_pvf_conv, key=f"conv_pvf_{conv_prod}")
+            nuevo_paq_pvf_conv = cv3.number_input("Precio Paquete Completo", min_value=0, step=500, value=int(c_row["PVF"]), key=f"conv_paq_pvf_{conv_prod}")
+            nuevo_smin_conv = cv4.number_input("Stock Mínimo (und)", min_value=0, step=1, value=int(c_row["Stock Mín."]) * int(und_x_paq_conv), key=f"conv_smin_{conv_prod}")
 
             st.info(
                 f"**Stock Inicial:** {int(c_row['Stock Inicial'])} paq → **{nuevo_s_ini_conv} und**  \n"
                 f"**Costo Base (sin IVA):** ${int(c_row['Costo Base']):,} / paq → **${nuevo_c_base_conv:,} / und**  \n"
-                f"**Precio Venta (PVF):** ${int(c_row['PVF']):,} → **${int(nuevo_pvf_conv):,} / und**"
+                f"**Precio Unidad:** **${int(nuevo_pvf_conv):,}** · **Precio Paquete Completo:** **${int(nuevo_paq_pvf_conv):,}**"
             )
 
             if st.button("🔄 Convertir Producto a Unidades", type="primary", width="stretch", key="btn_conv_prod"):
                 try:
-                    nota_conv = f"Convertido a unidades (1 paq = {und_x_paq_conv} und)".strip()
+                    nota_conv = f"Convertido a unidades (1 paq = {und_x_paq_conv} und | Paq: ${int(nuevo_paq_pvf_conv):,})".strip()
                     update_inventory_bulk([
                         {
                             "fila_excel": c_row["fila_excel"],
@@ -1756,10 +1770,11 @@ with tab_inv:
                             "stock_min": int(nuevo_smin_conv),
                             "costo_base": nuevo_c_base_conv,
                             "pvf": int(nuevo_pvf_conv),
+                            "precio_alt": int(nuevo_paq_pvf_conv),
                             "obs": nota_conv,
                         }
                     ])
-                    st.session_state["popup_msg"] = f"**{conv_prod}** convertido a **{nuevo_s_ini_conv} unidades** (${int(nuevo_pvf_conv):,} c/u)."
+                    st.session_state["popup_msg"] = f"**{conv_prod}** convertido a **{nuevo_s_ini_conv} unidades** (Unidad: ${int(nuevo_pvf_conv):,} · Paquete: ${int(nuevo_paq_pvf_conv):,})."
                     st.rerun()
                 except PermissionError:
                     st.error("❌ Cierra `LISTADO_VENTA.xlsx` en Excel para poder convertir el producto.")
